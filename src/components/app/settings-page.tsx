@@ -200,6 +200,7 @@ export function SettingsPage({
     const radarrRootFolders = discovery.radarrRootFolders.length > 0 ? discovery.radarrRootFolders : (connResults.radarr?.data?.rootFolders || []);
 
     const mediaStatus = serviceHealth(connResults.mediaServer, Boolean(formData.media_server_url && formData.media_server_api_key));
+    const seerrStatus = serviceHealth(connResults.seerr, Boolean(formData.seerr_enabled === 'true' && formData.seerr_url && formData.seerr_api_key));
     const sonarrStatus = serviceHealth(connResults.sonarr, Boolean(formData.sonarr_url && formData.sonarr_api_key));
     const radarrStatus = serviceHealth(connResults.radarr, Boolean(formData.radarr_url && formData.radarr_api_key));
     const aiStatus = serviceHealth(connResults.ai, Boolean(formData.ai_enabled === 'true' && formData.ai_provider_url && formData.ai_api_key));
@@ -325,6 +326,80 @@ export function SettingsPage({
                                     ))}
                                 </select>
                             </label>
+                        )}
+                    </section>
+
+                    <section className="settings-card">
+                        <div className="section-heading">
+                            <div>
+                                <p className="section-kicker">Preference Signals</p>
+                                <h3>Seerr watchlist</h3>
+                            </div>
+                            <div className="section-health-row">
+                                <HealthBadge label={seerrStatus.label} status={seerrStatus.status} />
+                                <button className="btn btn-ghost btn-sm" onClick={() => handleTest('seerr')} disabled={connResults.seerr?.testing || formData.seerr_enabled !== 'true'}>
+                                    {connResults.seerr?.testing ? 'Testing...' : 'Test connection'}
+                                </button>
+                            </div>
+                        </div>
+
+                        <label className="field-row">
+                            <span>Enable Seerr watchlist signal</span>
+                            <label className="switch">
+                                <input
+                                    type="checkbox"
+                                    checked={formData.seerr_enabled === 'true'}
+                                    onChange={(event) => updateField('seerr_enabled', event.target.checked ? 'true' : 'false')}
+                                />
+                                <span className="slider" />
+                            </label>
+                        </label>
+
+                        {formData.seerr_enabled === 'true' && (
+                            <>
+                                <div className="settings-grid two">
+                                    <label className="field-row">
+                                        <span>Seerr URL</span>
+                                        <input
+                                            type="text"
+                                            value={formData.seerr_url}
+                                            onChange={(event) => updateField('seerr_url', event.target.value)}
+                                            placeholder="http://192.168.1.100:5055"
+                                        />
+                                    </label>
+                                    <label className="field-row">
+                                        <span>API key</span>
+                                        <input
+                                            type="password"
+                                            value={formData.seerr_api_key}
+                                            onChange={(event) => updateField('seerr_api_key', event.target.value)}
+                                        />
+                                    </label>
+                                </div>
+
+                                <div className="settings-grid two">
+                                    <label className="field-row">
+                                        <span>Seerr user ID</span>
+                                        <input
+                                            type="number"
+                                            min={1}
+                                            value={formData.seerr_user_id}
+                                            onChange={(event) => updateField('seerr_user_id', event.target.value)}
+                                        />
+                                    </label>
+                                    <label className="field-row">
+                                        <span>Watchlist sync enabled</span>
+                                        <label className="switch">
+                                            <input
+                                                type="checkbox"
+                                                checked={formData.seerr_watchlist_sync_enabled === 'true'}
+                                                onChange={(event) => updateField('seerr_watchlist_sync_enabled', event.target.checked ? 'true' : 'false')}
+                                            />
+                                            <span className="slider" />
+                                        </label>
+                                    </label>
+                                </div>
+                            </>
                         )}
                     </section>
                 </div>

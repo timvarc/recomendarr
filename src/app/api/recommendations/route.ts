@@ -4,7 +4,7 @@ import { approveAndAdd } from '@/lib/engine';
 import type { FeedbackReason, Recommendation } from '@/lib/types';
 
 function isRecommendationStatus(value: string): value is Recommendation['status'] {
-    return ['pending', 'approved', 'rejected', 'added'].includes(value);
+    return ['pending', 'approved', 'rejected', 'added', 'not_now', 'watched'].includes(value);
 }
 
 export async function GET(request: Request) {
@@ -14,6 +14,8 @@ export async function GET(request: Request) {
         const limit = parseInt(searchParams.get('limit') || '50', 10);
         const offset = parseInt(searchParams.get('offset') || '0', 10);
         const countsOnly = searchParams.get('counts') === 'true';
+        const watchlistFilter = searchParams.get('watchlist');
+        const watchlist = watchlistFilter === 'only' || watchlistFilter === 'exclude' ? watchlistFilter : 'all';
         const statuses: Recommendation['status'][] | undefined = statusParam
             ? statusParam
                 .split(',')
@@ -26,7 +28,7 @@ export async function GET(request: Request) {
             return NextResponse.json(counts);
         }
 
-        const recommendations = getRecommendations(statuses, limit, offset);
+        const recommendations = getRecommendations(statuses, limit, offset, { watchlist });
         const counts = getRecommendationCounts();
         return NextResponse.json({ recommendations, counts });
     } catch (err) {
@@ -60,6 +62,10 @@ export async function PATCH(request: Request) {
         } else if (action === 'pending') {
             updateRecommendationStatus(id, 'pending');
             return NextResponse.json({ success: true, message: 'Recommendation reset to pending' });
+        } else if (action === 'not_now') {
+            const snoozeDays = Number(body.snoozeDays) || 30;
+            updateRecommendationStatus(id, 'not_now', { snoozeDays });
+            return NextResponse.json({ success: true, message: 'Recommendation snoozed for now' });
         }
 
         return NextResponse.json({ error: 'Invalid action' }, { status: 400 });

@@ -5,6 +5,7 @@ import { testRadarrConnection, getRadarrQualityProfiles, getRadarrRootFolders } 
 import { testAiConnection } from '@/lib/ai-recommender';
 import { getConfigWithOverrides } from '@/lib/config';
 import { sendTestNotification } from '@/lib/notifications';
+import { testSeerrConnection } from '@/lib/seerr';
 
 export async function POST(request: Request) {
     try {
@@ -47,6 +48,11 @@ export async function POST(request: Request) {
                     } catch { /* ignore */ }
                 }
                 return NextResponse.json({ success: connected, profiles, rootFolders });
+            }
+
+            case 'seerr': {
+                const connected = await testSeerrConnection(config.seerr);
+                return NextResponse.json({ success: connected });
             }
 
             case 'ai': {

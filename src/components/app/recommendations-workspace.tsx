@@ -11,6 +11,8 @@ interface RecommendationsWorkspaceProps {
     counts: Counts;
     filter: RecommendationFilter;
     setFilter: (value: RecommendationFilter) => void;
+    watchlistFilter: 'all' | 'only' | 'exclude';
+    setWatchlistFilter: (value: 'all' | 'only' | 'exclude') => void;
     feedbackProfile: FeedbackProfile;
     loading: boolean;
     listLoading: boolean;
@@ -26,6 +28,8 @@ export function RecommendationsWorkspace({
     counts,
     filter,
     setFilter,
+    watchlistFilter,
+    setWatchlistFilter,
     feedbackProfile,
     loading,
     listLoading,
@@ -41,7 +45,7 @@ export function RecommendationsWorkspace({
     const deferredQuery = useDeferredValue(searchQuery);
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const sentinelRef = useRef<HTMLDivElement | null>(null);
-    const queueCount = counts.pending + counts.rejected;
+    const queueCount = counts.pending + counts.rejected + counts.not_now;
     const isQueueMode = mode === 'queue';
 
     const filteredRecs = useMemo(() => {
@@ -148,6 +152,7 @@ export function RecommendationsWorkspace({
                             { key: 'all', label: `All active (${queueCount})` },
                             { key: 'pending', label: `Pending (${counts.pending})` },
                             { key: 'rejected', label: `Rejected (${counts.rejected})` },
+                            { key: 'not_now', label: `Not now (${counts.not_now})` },
                         ].map((tab) => (
                             <button
                                 key={tab.key}
@@ -172,6 +177,13 @@ export function RecommendationsWorkspace({
                         <option value="newest">Newest first</option>
                         <option value="rating">Highest rated</option>
                     </select>
+                    {isQueueMode && (
+                        <select value={watchlistFilter} onChange={(event) => setWatchlistFilter(event.target.value as 'all' | 'only' | 'exclude')}>
+                            <option value="all">All recommendation sources</option>
+                            <option value="only">From watchlist only</option>
+                            <option value="exclude">Exclude watchlist-tagged</option>
+                        </select>
+                    )}
                 </div>
             </div>
 
@@ -230,6 +242,9 @@ export function RecommendationsWorkspace({
                                             {rec.overview && <p className="workspace-item-overview">{rec.overview}</p>}
 
                                             <div className="signal-row compact">
+                                                {rec.fromWatchlist && (
+                                                    <span className="micro-pill primary">From watchlist</span>
+                                                )}
                                                 {signals.slice(0, 3).map((signal) => (
                                                     <span key={`${signal.label}-${signal.value || ''}`} className={`micro-pill ${signal.tone}`}>
                                                         {signal.label}

@@ -14,9 +14,11 @@
 
 - **Automated Discovery**: Analyzes your watch history from **Plex**, **Jellyfin**, or **Emby**.
 - **Dual Recommendation Engines**: Uses both **TMDb** for related content and **OpenAI** (or compatible LLMs) for deep, personalized AI recommendations.
+- **Seerr Watchlist Signals**: Optionally syncs Seerr watchlist data as an interest signal for ranking without force-injecting watchlist items.
 - **Direct Integration**: Adds approved media straight into Radarr and Sonarr—no Jellyseerr or Overseerr required.
 - **Guided Setup Wizard**: A discovery-first, 5-step onboarding UI with a final review screen to connect all your services in minutes.
 - **UI-Driven Configuration**: No complex `.env` files to manage. Settings are editable from a beautiful web interface and persisted in a lightweight SQLite database.
+- **Neutral Queue Controls**: Use **Not now** to snooze recommendations without sending a negative rejection signal.
 
 ---
 

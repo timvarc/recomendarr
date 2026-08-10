@@ -79,6 +79,7 @@ export function RecommendationDetail({
                             <span className={`status-pill ${recommendation.status}`}>{recommendation.status}</span>
                             <span className={`source-pill ${recommendation.source}`}>{recommendation.source === 'ai' ? 'AI blend' : 'TMDb graph'}</span>
                             <span className={`type-pill-inline ${recommendation.mediaType}`}>{recommendation.mediaType}</span>
+                            {recommendation.fromWatchlist && <span className="micro-pill primary">From watchlist</span>}
                         </div>
 
                         <h2>{recommendation.title}</h2>
@@ -186,6 +187,9 @@ export function RecommendationDetail({
                             <button className="btn btn-danger" onClick={() => onAction(recommendation.id!, 'reject')} disabled={loading}>
                                 Reject with feedback
                             </button>
+                            <button className="btn btn-ghost" onClick={() => onAction(recommendation.id!, 'not_now')} disabled={loading}>
+                                Not now
+                            </button>
                         </>
                     )}
                     {recommendation.status === 'rejected' && (
@@ -196,8 +200,19 @@ export function RecommendationDetail({
                             </button>
                         </>
                     )}
+                    {recommendation.status === 'not_now' && (
+                        <>
+                            <span className="helper-copy">Snoozed until: {recommendation.snoozedUntil ? new Date(recommendation.snoozedUntil).toLocaleDateString() : 'later'}</span>
+                            <button className="btn btn-ghost" onClick={() => onAction(recommendation.id!, 'pending')} disabled={loading}>
+                                Bring back now
+                            </button>
+                        </>
+                    )}
                     {recommendation.status === 'added' && (
                         <span className="helper-copy">This title has already been pushed to your library workflow.</span>
+                    )}
+                    {recommendation.status === 'watched' && (
+                        <span className="helper-copy">Marked watched from your media server history.</span>
                     )}
                 </div>
             </section>
