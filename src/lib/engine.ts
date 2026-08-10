@@ -3,10 +3,11 @@ import { getRecommendationsForItem, getTmdbExternalIds, searchTmdb, discoverByFi
 import { getAiRecommendations, generateTasteProfile, TasteProfile } from './ai-recommender';
 import { addMovieToRadarr, getAllRadarrMovies } from './radarr';
 import { addSeriesToSonarr, getAllSonarrSeries } from './sonarr';
-import { addRecommendation, addLog, getFeedbackProfile, getRecommendations, updateRecommendationStatus } from './database';
+import { addRecommendation, addLog, getFeedbackProfile, getRecommendations, getSeerrWatchlistSignalSets, getWatchedMediaSignalSets, syncSeerrWatchlistSignals, syncWatchedMediaState, updateRecommendationStatus } from './database';
 import { getConfig } from './config';
 import { notifyRunResult } from './notifications';
 import type { FeedbackProfile, Recommendation, WatchedItem } from './types';
+import { getSeerrWatchlist } from './seerr';
 
 export interface EngineFilters {
     genres?: string[];
@@ -25,6 +26,11 @@ interface LibrarySets {
     sonarrTvdbIds: Set<number>;
     sonarrTitles: Set<string>;
     watchedTitles: Set<string>;
+    watchedTmdbIds: Set<number>;
+    watchedTvdbIds: Set<number>;
+    watchedImdbIds: Set<string>;
+    seerrWatchlistTmdbIds: Set<number>;
+    seerrWatchlistTitles: Set<string>;
 }
 
 async function inferPreferredLanguages(items: WatchedItem[]): Promise<string[]> {
@@ -86,6 +92,7 @@ function scoreRecommendation(
     let score = rec.voteAverage ? rec.voteAverage / 10 : 0;
 
     if (rec.source === 'ai') score += 0.4;
+    if (rec.fromWatchlist) score += 1.1;
 
     const recGenres = (rec.genres || []).map((genre) => genre.toLowerCase());
     for (const genre of feedbackProfile.preferredGenres) {
@@ -159,6 +166,11 @@ export async function runRecommendationEngine(
             sonarrTvdbIds: new Set<number>(),
             sonarrTitles: new Set<string>(),
             watchedTitles: new Set<string>(),
+            watchedTmdbIds: new Set<number>(),
+            watchedTvdbIds: new Set<number>(),
+            watchedImdbIds: new Set<string>(),
+            seerrWatchlistTmdbIds: new Set<number>(),
+            seerrWatchlistTitles: new Set<string>(),
         };
 
         try {
@@ -195,6 +207,14 @@ export async function runRecommendationEngine(
             for (const w of watchHistory) {
                 library.watchedTitles.add(w.title.toLowerCase());
             }
+            syncWatchedMediaState(watchHistory);
+            const watchedSets = getWatchedMediaSignalSets();
+            library.watchedTmdbIds = watchedSets.tmdbIds;
+            library.watchedTvdbIds = watchedSets.tvdbIds;
+            library.watchedImdbIds = watchedSets.imdbIds;
+            for (const title of watchedSets.titles) {
+                library.watchedTitles.add(title);
+            }
             addLog({ level: 'INFO', message: `📺 Found ${watchHistory.length} watched items`, source: 'engine' });
         } catch (err) {
             const msg = `Failed to fetch watch history: ${(err as Error).message}`;
@@ -207,6 +227,20 @@ export async function runRecommendationEngine(
             addLog({ level: 'WARN', message: 'No watch history found. Skipping.', source: 'engine' });
             return result;
         }
+
+        const seerrCfg = getConfig().seerr;
+        if (seerrCfg.enabled && seerrCfg.watchlistSyncEnabled) {
+            try {
+                const watchlist = await getSeerrWatchlist(getConfig().app.maxRecommendationsPerRun * 10, seerrCfg);
+                syncSeerrWatchlistSignals(watchlist);
+            } catch (err) {
+                result.errors.push(`Seerr watchlist sync error: ${(err as Error).message}`);
+                addLog({ level: 'WARN', message: `Seerr watchlist sync failed: ${(err as Error).message}`, source: 'engine' });
+            }
+        }
+        const signalSets = getSeerrWatchlistSignalSets();
+        library.seerrWatchlistTmdbIds = signalSets.tmdbIds;
+        library.seerrWatchlistTitles = signalSets.titles;
 
         // Step 2: Get TMDb recommendations
         const allTmdbRecs: Recommendation[] = [];
@@ -346,6 +380,13 @@ export async function runRecommendationEngine(
 
         // Step 4: Merge, deduplicate, and save
         const allRecs = [...allTmdbRecs, ...aiRecs]
+            .map((rec) => ({
+                ...rec,
+                fromWatchlist: Boolean(
+                    (rec.tmdbId && library.seerrWatchlistTmdbIds.has(rec.tmdbId)) ||
+                    library.seerrWatchlistTitles.has(rec.title.toLowerCase())
+                ),
+            }))
             .toSorted((a, b) => scoreRecommendation(b, feedbackProfile, preferredLanguages) - scoreRecommendation(a, feedbackProfile, preferredLanguages));
         const seen = new Set<string>();
         const uniqueRecs: Recommendation[] = [];
@@ -409,7 +450,7 @@ export async function runRecommendationEngine(
 
             if (rec.mediaType === 'movie') {
                 // Check by TMDb ID first, then by title
-                if (rec.tmdbId && library.radarrTmdbIds.has(rec.tmdbId)) {
+                if (rec.tmdbId && (library.radarrTmdbIds.has(rec.tmdbId) || library.watchedTmdbIds.has(rec.tmdbId))) {
                     alreadyExists = true;
                 } else if (library.radarrTitles.has(titleLower)) {
                     alreadyExists = true;
@@ -423,7 +464,7 @@ export async function runRecommendationEngine(
                     } catch { /* ignore */ }
                 }
                 // Check by TVDB ID first, then by title
-                if (rec.tvdbId && library.sonarrTvdbIds.has(rec.tvdbId)) {
+                if (rec.tvdbId && (library.sonarrTvdbIds.has(rec.tvdbId) || library.watchedTvdbIds.has(rec.tvdbId))) {
                     alreadyExists = true;
                 } else if (library.sonarrTitles.has(titleLower)) {
                     alreadyExists = true;
@@ -431,7 +472,7 @@ export async function runRecommendationEngine(
             }
 
             // Also skip if title matches something already watched
-            if (library.watchedTitles.has(titleLower)) {
+            if (library.watchedTitles.has(titleLower) || (rec.imdbId && library.watchedImdbIds.has(rec.imdbId.toLowerCase()))) {
                 alreadyExists = true;
             }
             if (feedbackProfile.rejectedTitles.includes(titleLower)) {

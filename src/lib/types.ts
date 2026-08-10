@@ -3,6 +3,7 @@
 // ============================================
 
 export type MediaType = 'movie' | 'series';
+export type RecommendationStatus = 'pending' | 'approved' | 'rejected' | 'added' | 'not_now' | 'watched';
 export type FeedbackReason =
     | 'already_watched'
     | 'wrong_genre'
@@ -41,14 +42,25 @@ export interface Recommendation {
     genres?: string[];
     voteAverage?: number;
     source: 'tmdb' | 'ai';
+    fromWatchlist?: boolean;
     aiReasoning?: string;
     basedOn?: string;      // title of the watched item that triggered this
-    status: 'pending' | 'approved' | 'rejected' | 'added';
+    status: RecommendationStatus;
+    snoozedUntil?: string;
     feedbackReason?: FeedbackReason;
     feedbackNotes?: string;
     feedbackAt?: string;
     createdAt?: string;
     updatedAt?: string;
+}
+
+export interface WatchlistSignalItem {
+    title: string;
+    mediaType: MediaType;
+    tmdbId?: number;
+    year?: number;
+    overview?: string;
+    posterUrl?: string;
 }
 
 export interface FeedbackProfile {

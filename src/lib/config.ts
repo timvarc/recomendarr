@@ -154,6 +154,13 @@ export function getConfig() {
       userId: get('media_server_user_id', 'MEDIA_SERVER_USER_ID', ''),
       plexToken: get('plex_token', 'PLEX_TOKEN', ''),
     },
+    seerr: {
+      enabled: get('seerr_enabled', 'SEERR_ENABLED', 'false') === 'true',
+      url: get('seerr_url', 'SEERR_URL', ''),
+      apiKey: get('seerr_api_key', 'SEERR_API_KEY', ''),
+      userId: parseInteger(get('seerr_user_id', 'SEERR_USER_ID', '1'), 10),
+      watchlistSyncEnabled: get('seerr_watchlist_sync_enabled', 'SEERR_WATCHLIST_SYNC_ENABLED', 'true') === 'true',
+    },
     sonarr: {
       url: get('sonarr_url', 'SONARR_URL', ''),
       apiKey: get('sonarr_api_key', 'SONARR_API_KEY', ''),
@@ -215,6 +222,14 @@ export function getConfigWithOverrides(overrides: Record<string, string> = {}): 
       apiKey: withFallback(overrides.media_server_api_key, config.mediaServer.apiKey),
       userId: withFallback(overrides.media_server_user_id, config.mediaServer.userId),
       plexToken: withFallback(overrides.plex_token, config.mediaServer.plexToken || config.mediaServer.apiKey),
+    },
+    seerr: {
+      ...config.seerr,
+      enabled: parseBoolean(overrides.seerr_enabled, config.seerr.enabled),
+      url: withFallback(overrides.seerr_url, config.seerr.url),
+      apiKey: withFallback(overrides.seerr_api_key, config.seerr.apiKey),
+      userId: parseInteger(overrides.seerr_user_id, config.seerr.userId),
+      watchlistSyncEnabled: parseBoolean(overrides.seerr_watchlist_sync_enabled, config.seerr.watchlistSyncEnabled),
     },
     sonarr: {
       ...config.sonarr,

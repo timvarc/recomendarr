@@ -18,7 +18,7 @@ import { EMPTY_DASHBOARD_SUMMARY } from '@/components/app/models';
 import type { LogEntry, Recommendation } from '@/lib/types';
 
 const RECOMMENDATION_PAGE_SIZE = 24;
-const EMPTY_COUNTS: Counts = { pending: 0, approved: 0, rejected: 0, added: 0, total: 0 };
+const EMPTY_COUNTS: Counts = { pending: 0, approved: 0, rejected: 0, added: 0, not_now: 0, watched: 0, total: 0 };
 
 function getRecommendationStatuses(page: Page, filter: RecommendationFilter) {
     if (page === 'library') {
@@ -33,7 +33,11 @@ function getRecommendationStatuses(page: Page, filter: RecommendationFilter) {
         return ['rejected'];
     }
 
-    return ['pending', 'rejected'];
+    if (filter === 'not_now') {
+        return ['not_now'];
+    }
+
+    return ['pending', 'rejected', 'not_now'];
 }
 
 export default function Home() {
@@ -59,6 +63,7 @@ function HomeContent() {
     const [counts, setCounts] = useState<Counts>(EMPTY_COUNTS);
     const [logs, setLogs] = useState<LogEntry[]>([]);
     const [filter, setFilter] = useState<RecommendationFilter>('all');
+    const [watchlistFilter, setWatchlistFilter] = useState<'all' | 'only' | 'exclude'>('all');
     const [logFilter, setLogFilter] = useState('all');
     const [isRunning, setIsRunning] = useState(false);
     const [loading, setLoading] = useState(false);
@@ -135,6 +140,7 @@ function HomeContent() {
         try {
             const params = new URLSearchParams({
                 status: getRecommendationStatuses(page, filter).join(','),
+                watchlist: watchlistFilter,
                 limit: String(RECOMMENDATION_PAGE_SIZE),
                 offset: String(offset),
             });
@@ -162,7 +168,7 @@ function HomeContent() {
             setListLoading(false);
             setLoadingMoreRecs(false);
         }
-    }, [filter, page]);
+    }, [filter, page, watchlistFilter]);
 
     const loadMoreRecommendations = useCallback(() => {
         if (page !== 'recommendations' && page !== 'library') {
@@ -448,7 +454,7 @@ function HomeContent() {
                 return;
             }
 
-            toast(action === 'pending' ? 'Returned to queue' : 'Recommendation updated', 'info');
+            toast(action === 'pending' ? 'Returned to queue' : action === 'not_now' ? 'Snoozed for now' : 'Recommendation updated', 'info');
             await Promise.all([
                 fetchPendingPreview(),
                 fetchDashboardSummary(),
@@ -551,6 +557,8 @@ function HomeContent() {
                         counts={counts}
                         filter={filter}
                         setFilter={setFilter}
+                        watchlistFilter={watchlistFilter}
+                        setWatchlistFilter={setWatchlistFilter}
                         feedbackProfile={dashboardSummary.feedbackProfile}
                         loading={loading}
                         listLoading={listLoading}
@@ -569,6 +577,8 @@ function HomeContent() {
                         counts={counts}
                         filter={filter}
                         setFilter={setFilter}
+                        watchlistFilter={watchlistFilter}
+                        setWatchlistFilter={setWatchlistFilter}
                         feedbackProfile={dashboardSummary.feedbackProfile}
                         loading={loading}
                         listLoading={listLoading}

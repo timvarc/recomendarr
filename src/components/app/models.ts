@@ -1,7 +1,7 @@
 import type { FeedbackProfile, FeedbackReason } from '@/lib/types';
 
 export type Page = 'dashboard' | 'recommendations' | 'library' | 'logs' | 'settings';
-export type RecommendationFilter = 'all' | 'pending' | 'rejected';
+export type RecommendationFilter = 'all' | 'pending' | 'rejected' | 'not_now';
 export type SettingsTabId = 'media' | 'arr' | 'ai' | 'automation' | 'notifications' | 'advanced';
 
 export interface Counts {
@@ -9,6 +9,8 @@ export interface Counts {
     approved: number;
     rejected: number;
     added: number;
+    not_now: number;
+    watched: number;
     total: number;
 }
 
@@ -33,6 +35,11 @@ export interface SettingsFormData {
     media_server_url: string;
     media_server_api_key: string;
     media_server_user_id: string;
+    seerr_enabled: string;
+    seerr_url: string;
+    seerr_api_key: string;
+    seerr_user_id: string;
+    seerr_watchlist_sync_enabled: string;
     sonarr_url: string;
     sonarr_api_key: string;
     sonarr_quality_profile_id: string;
@@ -189,6 +196,11 @@ export const DEFAULT_SETTINGS_FORM: SettingsFormData = {
     media_server_url: '',
     media_server_api_key: '',
     media_server_user_id: '',
+    seerr_enabled: 'false',
+    seerr_url: '',
+    seerr_api_key: '',
+    seerr_user_id: '1',
+    seerr_watchlist_sync_enabled: 'true',
     sonarr_url: '',
     sonarr_api_key: '',
     sonarr_quality_profile_id: '',

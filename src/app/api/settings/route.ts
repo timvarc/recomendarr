@@ -20,6 +20,14 @@ export async function GET() {
                     apiKey: config.mediaServer.apiKey ? '••••' + config.mediaServer.apiKey.slice(-4) : '',
                     hasApiKey: !!config.mediaServer.apiKey,
                 },
+                seerr: {
+                    enabled: config.seerr.enabled,
+                    url: config.seerr.url,
+                    apiKey: config.seerr.apiKey ? '••••' + config.seerr.apiKey.slice(-4) : '',
+                    hasApiKey: !!config.seerr.apiKey,
+                    userId: config.seerr.userId,
+                    watchlistSyncEnabled: config.seerr.watchlistSyncEnabled,
+                },
                 sonarr: {
                     url: config.sonarr.url,
                     apiKey: config.sonarr.apiKey ? '••••' + config.sonarr.apiKey.slice(-4) : '',

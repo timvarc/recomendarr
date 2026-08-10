@@ -89,6 +89,10 @@ export function getRecommendationSignals(rec: Recommendation, feedbackProfile: F
         signals.push({ label: 'Based on', value: rec.basedOn, tone: 'primary' });
     }
 
+    if (rec.fromWatchlist) {
+        signals.push({ label: 'Watchlist affinity', value: 'From Seerr', tone: 'primary' });
+    }
+
     const preferredGenre = feedbackProfile.preferredGenres.find((genre) => genres.includes(genre));
     if (preferredGenre) {
         signals.push({ label: 'Matched preferred genre', value: prettifyToken(preferredGenre), tone: 'positive' });
