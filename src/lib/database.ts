@@ -112,7 +112,6 @@ function initializeDatabase(db: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_recommendations_status ON recommendations(status);
     CREATE INDEX IF NOT EXISTS idx_recommendations_tmdb ON recommendations(tmdb_id);
-    CREATE INDEX IF NOT EXISTS idx_recommendations_watchlist ON recommendations(from_watchlist);
     CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level);
     CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp);
     CREATE INDEX IF NOT EXISTS idx_watched_state_tmdb ON watched_media_state(tmdb_id);
@@ -129,31 +128,6 @@ function initializeDatabase(db: Database.Database) {
         db.exec("ALTER TABLE recommendations ADD COLUMN language TEXT;");
     }
 
-    function normalizeTitle(value: string): string {
-        return value.trim().toLowerCase();
-    }
-
-    function watchedStateId(item: WatchedItem): string {
-        if (item.tmdbId) return `tmdb:${item.mediaType}:${item.tmdbId}`;
-        if (item.tvdbId) return `tvdb:${item.mediaType}:${item.tvdbId}`;
-        if (item.imdbId) return `imdb:${item.mediaType}:${item.imdbId.toLowerCase()}`;
-        return `title:${item.mediaType}:${normalizeTitle(item.title)}`;
-    }
-
-    function watchlistSignalId(item: WatchlistSignalItem): string {
-        if (item.tmdbId) return `tmdb:${item.mediaType}:${item.tmdbId}`;
-        return `title:${item.mediaType}:${normalizeTitle(item.title)}`;
-    }
-
-    function isRecommendationStatus(value: string): value is RecommendationStatus {
-        return ['pending', 'approved', 'rejected', 'added', 'not_now', 'watched'].includes(value);
-    }
-
-    function resetExpiredNotNowRecommendations(db: Database.Database) {
-        db.prepare(
-            "UPDATE recommendations SET status = 'pending', snoozed_until = NULL, updated_at = datetime('now') WHERE status = 'not_now' AND snoozed_until IS NOT NULL AND datetime(snoozed_until) <= datetime('now')"
-        ).run();
-    }
     if (!columns.includes('feedback_reason')) {
         db.exec("ALTER TABLE recommendations ADD COLUMN feedback_reason TEXT;");
     }
@@ -213,9 +187,36 @@ function initializeDatabase(db: Database.Database) {
 
       CREATE INDEX IF NOT EXISTS idx_recommendations_status ON recommendations(status);
       CREATE INDEX IF NOT EXISTS idx_recommendations_tmdb ON recommendations(tmdb_id);
-      CREATE INDEX IF NOT EXISTS idx_recommendations_watchlist ON recommendations(from_watchlist);
     `);
     }
+
+    db.exec('CREATE INDEX IF NOT EXISTS idx_recommendations_watchlist ON recommendations(from_watchlist);');
+}
+
+function normalizeTitle(value: string): string {
+    return value.trim().toLowerCase();
+}
+
+function watchedStateId(item: WatchedItem): string {
+    if (item.tmdbId) return `tmdb:${item.mediaType}:${item.tmdbId}`;
+    if (item.tvdbId) return `tvdb:${item.mediaType}:${item.tvdbId}`;
+    if (item.imdbId) return `imdb:${item.mediaType}:${item.imdbId.toLowerCase()}`;
+    return `title:${item.mediaType}:${normalizeTitle(item.title)}`;
+}
+
+function watchlistSignalId(item: WatchlistSignalItem): string {
+    if (item.tmdbId) return `tmdb:${item.mediaType}:${item.tmdbId}`;
+    return `title:${item.mediaType}:${normalizeTitle(item.title)}`;
+}
+
+function isRecommendationStatus(value: string): value is RecommendationStatus {
+    return ['pending', 'approved', 'rejected', 'added', 'not_now', 'watched'].includes(value);
+}
+
+function resetExpiredNotNowRecommendations(db: Database.Database) {
+    db.prepare(
+        "UPDATE recommendations SET status = 'pending', snoozed_until = NULL, updated_at = datetime('now') WHERE status = 'not_now' AND snoozed_until IS NOT NULL AND datetime(snoozed_until) <= datetime('now')"
+    ).run();
 }
 
 // ---- Recommendation CRUD ----
