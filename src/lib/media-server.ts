@@ -98,7 +98,7 @@ class PlexConnector implements MediaServerConnector {
         this.client = axios.create({
             baseURL: cfg.url,
             headers: {
-                'X-Plex-Token': cfg.plexToken || cfg.apiKey,
+                'X-Plex-Token': cfg.apiKey,
                 Accept: 'application/json',
             },
         });
@@ -151,7 +151,7 @@ class PlexConnector implements MediaServerConnector {
                         genres: item.Genre?.map((g: { tag: string }) => g.tag) || [],
                         lastPlayedDate: item.lastViewedAt ? new Date(item.lastViewedAt * 1000).toISOString() : undefined,
                         overview: item.summary,
-                        posterUrl: item.thumb ? `${this.cfg.url}${item.thumb}?X-Plex-Token=${this.cfg.plexToken || this.cfg.apiKey}` : undefined,
+                        posterUrl: item.thumb ? `${this.cfg.url}${item.thumb}?X-Plex-Token=${this.cfg.apiKey}` : undefined,
                     });
                 }
             } catch (err) {

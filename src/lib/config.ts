@@ -152,7 +152,6 @@ export function getConfig() {
       url: get('media_server_url', 'MEDIA_SERVER_URL', ''),
       apiKey: get('media_server_api_key', 'MEDIA_SERVER_API_KEY', ''),
       userId: get('media_server_user_id', 'MEDIA_SERVER_USER_ID', ''),
-      plexToken: get('plex_token', 'PLEX_TOKEN', ''),
     },
     seerr: {
       enabled: get('seerr_enabled', 'SEERR_ENABLED', 'false') === 'true',
@@ -221,7 +220,6 @@ export function getConfigWithOverrides(overrides: Record<string, string> = {}): 
       url: withFallback(overrides.media_server_url, config.mediaServer.url),
       apiKey: withFallback(overrides.media_server_api_key, config.mediaServer.apiKey),
       userId: withFallback(overrides.media_server_user_id, config.mediaServer.userId),
-      plexToken: withFallback(overrides.plex_token, config.mediaServer.plexToken || config.mediaServer.apiKey),
     },
     seerr: {
       ...config.seerr,

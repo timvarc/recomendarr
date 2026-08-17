@@ -38,6 +38,12 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
+# Defense in depth: Next.js standalone output auto-copies any .env* files
+# present in the build context. Never ship real secrets in the image —
+# all configuration is done via the Settings UI (stored in SQLite) or
+# environment variables passed at `docker run` time.
+RUN rm -f /app/.env /app/.env.*
+
 RUN mkdir -p /app/data && chown nextjs:nodejs /app/data
 
 COPY entrypoint.sh /usr/local/bin/

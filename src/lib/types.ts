@@ -78,7 +78,6 @@ export interface MediaServerConfig {
     url: string;
     apiKey: string;
     userId: string;
-    plexToken?: string;
 }
 
 export interface SonarrSeries {
