@@ -189,61 +189,63 @@ async function generateAndSaveForScope(
         });
     }
 
-    for (const item of sampledItems) {
-        try {
-            const recs = await getRecommendationsForItem(item, maxPerItem);
-            allTmdbRecs.push(...recs);
-        } catch (err) {
-            result.errors.push(`TMDb error for "${item.title}": ${(err as Error).message}`);
+    if (cfg.tmdb.recommendationsEnabled) {
+        for (const item of sampledItems) {
+            try {
+                const recs = await getRecommendationsForItem(item, maxPerItem);
+                allTmdbRecs.push(...recs);
+            } catch (err) {
+                result.errors.push(`TMDb error for "${item.title}": ${(err as Error).message}`);
+            }
         }
-    }
 
-    // Step 2b: Filter-driven discovery via TMDb /discover endpoint
-    if (
-        (filters && (filters.genres?.length || filters.yearMin || filters.yearMax || (filters.language && filters.language !== 'all') || (filters.mediaType && filters.mediaType !== 'all')))
-        || preferredLanguages.length > 0
-    ) {
-        try {
-            addLog({ level: 'INFO', message: `🔍 Running filter-driven TMDb discovery...`, source: 'engine' });
-            const discoverRecs = await discoverByFilters({
-                genres: filters?.genres,
-                language: filters?.language,
-                preferredLanguages,
-                yearMin: filters?.yearMin,
-                yearMax: filters?.yearMax,
-                mediaType: filters?.mediaType,
-                minRating: filters?.minRating,
-                providers: filters?.providers,
-            }, cfg.app.maxRecommendationsPerRun);
-            allTmdbRecs.push(...discoverRecs);
-            addLog({ level: 'INFO', message: `🔍 Filter discovery added ${discoverRecs.length} recommendations`, source: 'engine' });
-        } catch (err) {
-            result.errors.push(`TMDb discover error: ${(err as Error).message}`);
+        // Step 2b: Filter-driven discovery via TMDb /discover endpoint
+        if (
+            (filters && (filters.genres?.length || filters.yearMin || filters.yearMax || (filters.language && filters.language !== 'all') || (filters.mediaType && filters.mediaType !== 'all')))
+            || preferredLanguages.length > 0
+        ) {
+            try {
+                addLog({ level: 'INFO', message: `🔍 Running filter-driven TMDb discovery...`, source: 'engine' });
+                const discoverRecs = await discoverByFilters({
+                    genres: filters?.genres,
+                    language: filters?.language,
+                    preferredLanguages,
+                    yearMin: filters?.yearMin,
+                    yearMax: filters?.yearMax,
+                    mediaType: filters?.mediaType,
+                    minRating: filters?.minRating,
+                    providers: filters?.providers,
+                }, cfg.app.maxRecommendationsPerRun);
+                allTmdbRecs.push(...discoverRecs);
+                addLog({ level: 'INFO', message: `🔍 Filter discovery added ${discoverRecs.length} recommendations`, source: 'engine' });
+            } catch (err) {
+                result.errors.push(`TMDb discover error: ${(err as Error).message}`);
+            }
         }
-    }
 
-    result.tmdbRecommendations += allTmdbRecs.length;
-    addLog({ level: 'INFO', message: `🎯 TMDb found ${allTmdbRecs.length} recommendations`, source: 'engine' });
+        result.tmdbRecommendations += allTmdbRecs.length;
+        addLog({ level: 'INFO', message: `🎯 TMDb found ${allTmdbRecs.length} recommendations`, source: 'engine' });
 
-    // Step 2c: Creator Following (Director extraction for Top 2 movies) — movie-only, so skip
-    // outright when this scope is restricted to series (avoids wasted TMDb calls; the final
-    // mediaType filter below would strip these anyway, but there's no reason to make the calls).
-    if (!filters?.mediaType || filters.mediaType === 'all' || filters.mediaType === 'movie') {
-        try {
-            const topMovies = scoredHistory.filter(s => s.item.mediaType === 'movie' && s.item.tmdbId).slice(0, 2);
-            for (const s of topMovies) {
-                const credits = await getTmdbCredits(s.item.tmdbId!, 'movie');
-                if (credits && credits.crew) {
-                    const director = credits.crew.find((crewMember) => crewMember.job === 'Director');
-                    if (director) {
-                        addLog({ level: 'INFO', message: `🎬 Creator Following: Discovering works by ${director.name} (from ${s.item.title})`, source: 'engine' });
-                        const directorRecs = await discoverByCrew(director.id, 'movie', director.name, 3, preferredLanguages);
-                        allTmdbRecs.push(...directorRecs);
+        // Step 2c: Creator Following (Director extraction for Top 2 movies) — movie-only, so skip
+        // outright when this scope is restricted to series (avoids wasted TMDb calls; the final
+        // mediaType filter below would strip these anyway, but there's no reason to make the calls).
+        if (!filters?.mediaType || filters.mediaType === 'all' || filters.mediaType === 'movie') {
+            try {
+                const topMovies = scoredHistory.filter(s => s.item.mediaType === 'movie' && s.item.tmdbId).slice(0, 2);
+                for (const s of topMovies) {
+                    const credits = await getTmdbCredits(s.item.tmdbId!, 'movie');
+                    if (credits && credits.crew) {
+                        const director = credits.crew.find((crewMember) => crewMember.job === 'Director');
+                        if (director) {
+                            addLog({ level: 'INFO', message: `🎬 Creator Following: Discovering works by ${director.name} (from ${s.item.title})`, source: 'engine' });
+                            const directorRecs = await discoverByCrew(director.id, 'movie', director.name, 3, preferredLanguages);
+                            allTmdbRecs.push(...directorRecs);
+                        }
                     }
                 }
+            } catch (err) {
+                result.errors.push(`Creator following error: ${(err as Error).message}`);
             }
-        } catch (err) {
-            result.errors.push(`Creator following error: ${(err as Error).message}`);
         }
     }
 
@@ -267,8 +269,8 @@ async function generateAndSaveForScope(
     }
 
     // Step 3b: Dynamic Keyword Discovery — restrict each branch to the active mediaType filter,
-    // same reasoning as Step 2c above.
-    if (tasteProfile && tasteProfile.keywords && tasteProfile.keywords.length > 0) {
+    // same reasoning as Step 2c above. Also TMDb-sourced, so respect the same toggle.
+    if (cfg.tmdb.recommendationsEnabled && tasteProfile && tasteProfile.keywords && tasteProfile.keywords.length > 0) {
         try {
             addLog({ level: 'INFO', message: `🔍 Running dynamic keyword discovery for: ${tasteProfile.keywords.join(', ')}`, source: 'engine' });
             const keywordIds: number[] = [];
