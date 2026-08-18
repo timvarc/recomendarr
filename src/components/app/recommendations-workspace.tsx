@@ -1,7 +1,7 @@
 'use client';
 
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import type { FeedbackProfile, Recommendation } from '@/lib/types';
+import type { FeedbackProfile, LibraryGroup, Recommendation } from '@/lib/types';
 import type { Counts, RecommendationFilter } from './models';
 import { RecommendationDetail } from './recommendation-detail';
 import { formatFeedbackReason, getLearningHighlights, getRecommendationSignals } from './utils';
@@ -13,6 +13,9 @@ interface RecommendationsWorkspaceProps {
     setFilter: (value: RecommendationFilter) => void;
     watchlistFilter: 'all' | 'only' | 'exclude';
     setWatchlistFilter: (value: 'all' | 'only' | 'exclude') => void;
+    libraryGroups: LibraryGroup[];
+    libraryFilter: string;
+    setLibraryFilter: (value: string) => void;
     feedbackProfile: FeedbackProfile;
     loading: boolean;
     listLoading: boolean;
@@ -30,6 +33,9 @@ export function RecommendationsWorkspace({
     setFilter,
     watchlistFilter,
     setWatchlistFilter,
+    libraryGroups,
+    libraryFilter,
+    setLibraryFilter,
     feedbackProfile,
     loading,
     listLoading,
@@ -39,6 +45,7 @@ export function RecommendationsWorkspace({
     onAction,
     mode,
 }: RecommendationsWorkspaceProps) {
+    const libraryGroupName = (id: string | null | undefined) => libraryGroups.find((g) => g.id === id)?.name;
     const [searchQuery, setSearchQuery] = useState('');
     const [sortBy, setSortBy] = useState<'newest' | 'rating'>('newest');
     const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -184,6 +191,14 @@ export function RecommendationsWorkspace({
                             <option value="exclude">Exclude watchlist-tagged</option>
                         </select>
                     )}
+                    {libraryGroups.length > 0 && (
+                        <select value={libraryFilter} onChange={(event) => setLibraryFilter(event.target.value)}>
+                            <option value="">All libraries</option>
+                            {libraryGroups.map((group) => (
+                                <option key={group.id} value={group.id}>{group.name}</option>
+                            ))}
+                        </select>
+                    )}
                 </div>
             </div>
 
@@ -244,6 +259,9 @@ export function RecommendationsWorkspace({
                                             <div className="signal-row compact">
                                                 {rec.fromWatchlist && (
                                                     <span className="micro-pill primary">From watchlist</span>
+                                                )}
+                                                {libraryGroupName(rec.libraryGroupId) && (
+                                                    <span className="micro-pill neutral">{libraryGroupName(rec.libraryGroupId)}</span>
                                                 )}
                                                 {signals.slice(0, 3).map((signal) => (
                                                     <span key={`${signal.label}-${signal.value || ''}`} className={`micro-pill ${signal.tone}`}>

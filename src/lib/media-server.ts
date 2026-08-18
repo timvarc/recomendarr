@@ -1,6 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import { getConfig } from './config';
-import type { WatchedItem, MediaServerConfig } from './types';
+import type { WatchedItem, MediaServerConfig, LibrarySection } from './types';
 import { addLog } from './database';
 
 // ============================================
@@ -11,6 +11,7 @@ export interface MediaServerConnector {
     testConnection(): Promise<boolean>;
     getWatchHistory(limit?: number): Promise<WatchedItem[]>;
     getUsers(): Promise<{ id: string; name: string }[]>;
+    getLibrarySections(): Promise<LibrarySection[]>;
 }
 
 // ============================================
@@ -84,6 +85,12 @@ class JellyfinConnector implements MediaServerConnector {
         addLog({ level: 'INFO', message: `Fetched ${items.length} watched items from Jellyfin`, source: 'jellyfin' });
         return items;
     }
+
+    async getLibrarySections(): Promise<LibrarySection[]> {
+        // Not yet supported for Jellyfin — library-group scoping requires per-item library provenance
+        // that this connector doesn't currently resolve.
+        return [];
+    }
 }
 
 // ============================================
@@ -130,14 +137,29 @@ class PlexConnector implements MediaServerConnector {
         }
     }
 
-    async getWatchHistory(limit = 50): Promise<WatchedItem[]> {
-        // Get all library sections first
+    private async getMovieAndShowSections(): Promise<Array<{ key: string; title: string; type: 'movie' | 'show' }>> {
         const sectionsRes = await this.client.get('/library/sections');
         const sections = sectionsRes.data?.MediaContainer?.Directory || [];
+        return sections.filter(
+            (section: { type: string }) => section.type === 'movie' || section.type === 'show'
+        );
+    }
+
+    async getLibrarySections(): Promise<LibrarySection[]> {
+        const sections = await this.getMovieAndShowSections();
+        return sections.map((section) => ({
+            key: section.key,
+            title: section.title,
+            type: section.type === 'movie' ? 'movie' : 'series',
+        }));
+    }
+
+    async getWatchHistory(limit = 50): Promise<WatchedItem[]> {
+        // Get all library sections first
+        const sections = await this.getMovieAndShowSections();
         const items: WatchedItem[] = [];
 
         for (const section of sections) {
-            if (section.type !== 'movie' && section.type !== 'show') continue;
             try {
                 const res = await this.client.get(`/library/sections/${section.key}/recentlyViewed`, {
                     params: { 'X-Plex-Container-Size': limit },
@@ -152,6 +174,7 @@ class PlexConnector implements MediaServerConnector {
                         lastPlayedDate: item.lastViewedAt ? new Date(item.lastViewedAt * 1000).toISOString() : undefined,
                         overview: item.summary,
                         posterUrl: item.thumb ? `${this.cfg.url}${item.thumb}?X-Plex-Token=${this.cfg.apiKey}` : undefined,
+                        librarySectionKey: section.key,
                     });
                 }
             } catch (err) {
@@ -234,6 +257,11 @@ class EmbyConnector implements MediaServerConnector {
 
         addLog({ level: 'INFO', message: `Fetched ${items.length} watched items from Emby`, source: 'emby' });
         return items;
+    }
+
+    async getLibrarySections(): Promise<LibrarySection[]> {
+        // Not yet supported for Emby — see JellyfinConnector.getLibrarySections.
+        return [];
     }
 }
 

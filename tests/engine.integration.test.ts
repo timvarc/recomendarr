@@ -18,6 +18,7 @@ function createMockConnector(watchHistory: WatchedItem[] | Promise<WatchedItem[]
         getWatchHistory: vi.fn().mockResolvedValue(watchHistory),
         testConnection: vi.fn().mockResolvedValue(true),
         getUsers: vi.fn().mockResolvedValue([]),
+        getLibrarySections: vi.fn().mockResolvedValue([]),
     };
 }
 
@@ -26,6 +27,7 @@ function createRejectingConnector(error: Error): MediaServerConnector {
         getWatchHistory: vi.fn().mockRejectedValue(error),
         testConnection: vi.fn().mockResolvedValue(false),
         getUsers: vi.fn().mockResolvedValue([]),
+        getLibrarySections: vi.fn().mockResolvedValue([]),
     };
 }
 

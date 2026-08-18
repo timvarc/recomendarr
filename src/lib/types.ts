@@ -26,6 +26,7 @@ export interface WatchedItem {
     rating?: number;
     overview?: string;
     posterUrl?: string;
+    librarySectionKey?: string;
 }
 
 export interface Recommendation {
@@ -52,6 +53,24 @@ export interface Recommendation {
     feedbackAt?: string;
     createdAt?: string;
     updatedAt?: string;
+    libraryGroupId?: string | null;
+}
+
+export interface LibrarySection {
+    key: string;
+    title: string;
+    type: MediaType;
+}
+
+export interface LibraryGroup {
+    id: string;
+    name: string;
+    mediaType: MediaType;
+    sectionKeys: string[];
+    influencedBy: string[];
+    qualityProfileId?: number;
+    rootFolder?: string;
+    aiEnabled?: boolean;
 }
 
 export interface WatchlistSignalItem {

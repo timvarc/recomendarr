@@ -55,6 +55,7 @@ function initializeDatabase(db: Database.Database) {
       feedback_at TEXT,
       snoozed_until TEXT,
       status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'added', 'not_now', 'watched')),
+      library_group_id TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -143,6 +144,9 @@ function initializeDatabase(db: Database.Database) {
     if (!columns.includes('snoozed_until')) {
         db.exec("ALTER TABLE recommendations ADD COLUMN snoozed_until TEXT;");
     }
+    if (!columns.includes('library_group_id')) {
+        db.exec("ALTER TABLE recommendations ADD COLUMN library_group_id TEXT;");
+    }
 
     const tableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'recommendations'").get() as { sql?: string } | undefined;
     if (tableSql?.sql && (!tableSql.sql.includes("'not_now'") || !tableSql.sql.includes("'watched'"))) {
@@ -169,17 +173,18 @@ function initializeDatabase(db: Database.Database) {
         feedback_at TEXT,
         snoozed_until TEXT,
         status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'added', 'not_now', 'watched')),
+        library_group_id TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
 
       INSERT INTO recommendations_new (
         id, title, year, language, media_type, tmdb_id, tvdb_id, imdb_id, overview, poster_url, genres, vote_average,
-        source, from_watchlist, ai_reasoning, based_on, feedback_reason, feedback_notes, feedback_at, snoozed_until, status, created_at, updated_at
+        source, from_watchlist, ai_reasoning, based_on, feedback_reason, feedback_notes, feedback_at, snoozed_until, status, library_group_id, created_at, updated_at
       )
       SELECT
         id, title, year, language, media_type, tmdb_id, tvdb_id, imdb_id, overview, poster_url, genres, vote_average,
-        source, COALESCE(from_watchlist, 0), ai_reasoning, based_on, feedback_reason, feedback_notes, feedback_at, snoozed_until, status, created_at, updated_at
+        source, COALESCE(from_watchlist, 0), ai_reasoning, based_on, feedback_reason, feedback_notes, feedback_at, snoozed_until, status, library_group_id, created_at, updated_at
       FROM recommendations;
 
       DROP TABLE recommendations;
@@ -191,6 +196,7 @@ function initializeDatabase(db: Database.Database) {
     }
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_recommendations_watchlist ON recommendations(from_watchlist);');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_recommendations_library_group ON recommendations(library_group_id);');
 }
 
 function normalizeTitle(value: string): string {
@@ -224,18 +230,19 @@ function resetExpiredNotNowRecommendations(db: Database.Database) {
 export function addRecommendation(rec: Recommendation): Recommendation {
     const db = getDatabase();
     const id = rec.id || crypto.randomUUID();
+    const libraryGroupId = rec.libraryGroupId ?? null;
 
-    // Check for duplicates by tmdb_id
+    // Check for duplicates by tmdb_id + media_type + library group (NULL-safe: legacy/ungrouped rows share one bucket)
     if (rec.tmdbId) {
         const existing = db.prepare(
-            'SELECT id FROM recommendations WHERE tmdb_id = ? AND media_type = ?'
-        ).get(rec.tmdbId, rec.mediaType) as { id: string } | undefined;
+            'SELECT id FROM recommendations WHERE tmdb_id = ? AND media_type = ? AND library_group_id IS ?'
+        ).get(rec.tmdbId, rec.mediaType, libraryGroupId) as { id: string } | undefined;
         if (existing) return { ...rec, id: existing.id };
     }
 
     db.prepare(`
-    INSERT INTO recommendations (id, title, year, language, media_type, tmdb_id, tvdb_id, imdb_id, overview, poster_url, genres, vote_average, source, from_watchlist, ai_reasoning, based_on, feedback_reason, feedback_notes, feedback_at, snoozed_until, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO recommendations (id, title, year, language, media_type, tmdb_id, tvdb_id, imdb_id, overview, poster_url, genres, vote_average, source, from_watchlist, ai_reasoning, based_on, feedback_reason, feedback_notes, feedback_at, snoozed_until, status, library_group_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
         id, rec.title, rec.year || null, rec.language || null, rec.mediaType,
         rec.tmdbId || null, rec.tvdbId || null, rec.imdbId || null,
@@ -245,22 +252,23 @@ export function addRecommendation(rec: Recommendation): Recommendation {
         rec.aiReasoning || null, rec.basedOn || null,
         rec.feedbackReason || null, rec.feedbackNotes || null, rec.feedbackAt || null,
         rec.snoozedUntil || null,
-        rec.status
+        rec.status,
+        libraryGroupId
     );
 
-    return { ...rec, id };
+    return { ...rec, id, libraryGroupId };
 }
 
 export function getRecommendations(
     status?: RecommendationStatus | RecommendationStatus[],
     limit = 50,
     offset = 0,
-    options?: { watchlist?: 'all' | 'only' | 'exclude' }
+    options?: { watchlist?: 'all' | 'only' | 'exclude'; libraryGroupId?: string }
 ): Recommendation[] {
     const db = getDatabase();
     resetExpiredNotNowRecommendations(db);
     let query = 'SELECT * FROM recommendations';
-    const params: Array<RecommendationStatus | number> = [];
+    const params: Array<RecommendationStatus | number | string> = [];
     const statuses = Array.isArray(status)
         ? status.filter(Boolean)
         : status
@@ -276,6 +284,10 @@ export function getRecommendations(
         clauses.push('from_watchlist = 1');
     } else if (options?.watchlist === 'exclude') {
         clauses.push('from_watchlist = 0');
+    }
+    if (options?.libraryGroupId) {
+        clauses.push('library_group_id = ?');
+        params.push(options.libraryGroupId);
     }
     if (clauses.length > 0) {
         query += ` WHERE ${clauses.join(' AND ')}`;
@@ -363,6 +375,7 @@ function rowToRecommendation(row: Record<string, unknown>): Recommendation {
         feedbackAt: row.feedback_at as string | undefined,
         createdAt: row.created_at as string,
         updatedAt: row.updated_at as string,
+        libraryGroupId: row.library_group_id as string | null | undefined,
     };
 }
 
@@ -377,15 +390,19 @@ function pushMediaType(counts: Map<MediaType, number>, mediaType: MediaType) {
     counts.set(mediaType, (counts.get(mediaType) || 0) + 1);
 }
 
-export function getFeedbackProfile(limit = 200): FeedbackProfile {
+export function getFeedbackProfile(limit = 200, scopeGroupIds?: string[]): FeedbackProfile {
     const db = getDatabase();
+    const groupClause = scopeGroupIds && scopeGroupIds.length > 0
+        ? ` AND (library_group_id IS NULL OR library_group_id IN (${scopeGroupIds.map(() => '?').join(', ')}))`
+        : '';
+    const params: Array<string | number> = scopeGroupIds && scopeGroupIds.length > 0 ? [...scopeGroupIds, limit] : [limit];
     const rows = db.prepare(`
         SELECT title, media_type, genres, status, feedback_reason
         FROM recommendations
-        WHERE status IN ('rejected', 'added')
+        WHERE status IN ('rejected', 'added')${groupClause}
         ORDER BY updated_at DESC
         LIMIT ?
-    `).all(limit) as Array<{
+    `).all(...params) as Array<{
         title: string;
         media_type: MediaType;
         genres: string | null;

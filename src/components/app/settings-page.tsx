@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AutomationPanel } from './automation-panel';
 import { HealthBadge } from './health-badge';
+import { LibraryGroupsPanel } from './library-groups-panel';
 import { NotificationPanel } from './notification-panel';
 import type { ConnectionResult, DashboardSummary, SettingsFormData, SettingsTabId } from './models';
 import { DEFAULT_SETTINGS_FORM, SETTINGS_TABS } from './models';
@@ -13,6 +14,7 @@ interface SettingsPageProps {
     onTest: (service: string, settings?: Record<string, string>) => Promise<ConnectionResult['data'] | null>;
     toast: (msg: string, type?: string) => void;
     dashboardSummary: DashboardSummary;
+    onLibraryGroupsSaved?: () => void;
 }
 
 function serviceHealth(result: ConnectionResult | undefined, configured: boolean) {
@@ -27,6 +29,7 @@ export function SettingsPage({
     onTest,
     toast,
     dashboardSummary,
+    onLibraryGroupsSaved,
 }: SettingsPageProps) {
     const [formData, setFormData] = useState<SettingsFormData>({ ...DEFAULT_SETTINGS_FORM });
     const [saving, setSaving] = useState(false);
@@ -403,6 +406,10 @@ export function SettingsPage({
                         )}
                     </section>
                 </div>
+            )}
+
+            {activeTab === 'libraries' && (
+                <LibraryGroupsPanel connResults={connResults} onTest={onTest} toast={toast} onSaved={onLibraryGroupsSaved} />
             )}
 
             {activeTab === 'arr' && (

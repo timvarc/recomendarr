@@ -15,7 +15,7 @@ import type {
     RecommendationFilter,
 } from '@/components/app/models';
 import { EMPTY_DASHBOARD_SUMMARY } from '@/components/app/models';
-import type { LogEntry, Recommendation } from '@/lib/types';
+import type { LibraryGroup, LogEntry, Recommendation } from '@/lib/types';
 
 const RECOMMENDATION_PAGE_SIZE = 24;
 const EMPTY_COUNTS: Counts = { pending: 0, approved: 0, rejected: 0, added: 0, not_now: 0, watched: 0, total: 0 };
@@ -64,6 +64,8 @@ function HomeContent() {
     const [logs, setLogs] = useState<LogEntry[]>([]);
     const [filter, setFilter] = useState<RecommendationFilter>('all');
     const [watchlistFilter, setWatchlistFilter] = useState<'all' | 'only' | 'exclude'>('all');
+    const [libraryFilter, setLibraryFilter] = useState('');
+    const [libraryGroups, setLibraryGroups] = useState<LibraryGroup[]>([]);
     const [logFilter, setLogFilter] = useState('all');
     const [isRunning, setIsRunning] = useState(false);
     const [loading, setLoading] = useState(false);
@@ -144,6 +146,7 @@ function HomeContent() {
                 limit: String(RECOMMENDATION_PAGE_SIZE),
                 offset: String(offset),
             });
+            if (libraryFilter) params.set('library', libraryFilter);
             const response = await fetch(`/api/recommendations?${params}`);
             const data = await response.json();
             const nextRecs = Array.isArray(data.recommendations) ? data.recommendations as Recommendation[] : [];
@@ -168,7 +171,7 @@ function HomeContent() {
             setListLoading(false);
             setLoadingMoreRecs(false);
         }
-    }, [filter, page, watchlistFilter]);
+    }, [filter, libraryFilter, page, watchlistFilter]);
 
     const loadMoreRecommendations = useCallback(() => {
         if (page !== 'recommendations' && page !== 'library') {
@@ -214,6 +217,16 @@ function HomeContent() {
         }
     }, []);
 
+    const fetchLibraryGroups = useCallback(async () => {
+        try {
+            const response = await fetch('/api/library-groups');
+            const data = await response.json();
+            setLibraryGroups(Array.isArray(data.groups) ? data.groups : []);
+        } catch {
+            // silent fetch failure
+        }
+    }, []);
+
     useEffect(() => {
         fetch('/api/settings')
             .then((response) => response.json())
@@ -223,8 +236,8 @@ function HomeContent() {
 
     useEffect(() => {
         if (!setupComplete) return;
-        void Promise.all([fetchPendingPreview(), fetchDashboardSummary(), checkEngine()]);
-    }, [checkEngine, fetchDashboardSummary, fetchPendingPreview, setupComplete]);
+        void Promise.all([fetchPendingPreview(), fetchDashboardSummary(), checkEngine(), fetchLibraryGroups()]);
+    }, [checkEngine, fetchDashboardSummary, fetchLibraryGroups, fetchPendingPreview, setupComplete]);
 
     useEffect(() => {
         if (!setupComplete) return;
@@ -334,8 +347,19 @@ function HomeContent() {
             const data = await response.json();
             setArrProfiles(data.profiles || []);
             setArrFolders(data.folders || []);
-            if (data.profiles?.length) setSelectedProfile(data.profiles[0].id);
-            if (data.folders?.length) setSelectedFolder(data.folders[0].path);
+
+            const group = recommendation.libraryGroupId
+                ? libraryGroups.find((g) => g.id === recommendation.libraryGroupId)
+                : undefined;
+            const defaultProfile = group?.qualityProfileId && data.profiles?.some((p: { id: number }) => p.id === group.qualityProfileId)
+                ? group.qualityProfileId
+                : data.profiles?.[0]?.id;
+            const defaultFolder = group?.rootFolder && data.folders?.some((f: { path: string }) => f.path === group.rootFolder)
+                ? group.rootFolder
+                : data.folders?.[0]?.path;
+
+            if (defaultProfile) setSelectedProfile(defaultProfile);
+            if (defaultFolder) setSelectedFolder(defaultFolder);
         } catch {
             toast('Could not fetch profile and folder options', 'error');
         } finally {
@@ -559,6 +583,9 @@ function HomeContent() {
                         setFilter={setFilter}
                         watchlistFilter={watchlistFilter}
                         setWatchlistFilter={setWatchlistFilter}
+                        libraryGroups={libraryGroups}
+                        libraryFilter={libraryFilter}
+                        setLibraryFilter={setLibraryFilter}
                         feedbackProfile={dashboardSummary.feedbackProfile}
                         loading={loading}
                         listLoading={listLoading}
@@ -579,6 +606,9 @@ function HomeContent() {
                         setFilter={setFilter}
                         watchlistFilter={watchlistFilter}
                         setWatchlistFilter={setWatchlistFilter}
+                        libraryGroups={libraryGroups}
+                        libraryFilter={libraryFilter}
+                        setLibraryFilter={setLibraryFilter}
                         feedbackProfile={dashboardSummary.feedbackProfile}
                         loading={loading}
                         listLoading={listLoading}
@@ -606,6 +636,7 @@ function HomeContent() {
                         onTest={testConnection}
                         toast={toast}
                         dashboardSummary={dashboardSummary}
+                        onLibraryGroupsSaved={fetchLibraryGroups}
                     />
                 )}
             </main>

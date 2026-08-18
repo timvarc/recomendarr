@@ -8,6 +8,7 @@ import { getConfig } from './config';
 import { notifyRunResult } from './notifications';
 import type { FeedbackProfile, Recommendation, WatchedItem } from './types';
 import { getSeerrWatchlist } from './seerr';
+import { getLibraryGroups, resolveInputGroupIds, resolveInputSectionKeys } from './library-groups';
 
 export interface EngineFilters {
     genres?: string[];
@@ -133,6 +134,325 @@ export function getIsRunning(): boolean {
     return isRunning;
 }
 
+interface GroupScope {
+    libraryGroupId: string | null;
+}
+
+// Runs candidate generation (TMDb + AI), dedup, scoring, filtering, and persistence for a single
+// scope: either "ungrouped" (scope.libraryGroupId === null, today's behavior) or one library group.
+async function generateAndSaveForScope(
+    watchHistoryForScope: WatchedItem[],
+    library: LibrarySets,
+    feedbackProfile: FeedbackProfile,
+    cfg: ReturnType<typeof getConfig>,
+    filters: EngineFilters | undefined,
+    scope: GroupScope,
+    result: RunResult
+): Promise<Recommendation[]> {
+    // Step 2: Get TMDb recommendations
+    const allTmdbRecs: Recommendation[] = [];
+    const maxPerItem = Math.ceil(cfg.app.maxRecommendationsPerRun / Math.min(watchHistoryForScope.length, 10));
+
+    // Filter watch history by media type if filter is set
+    let filteredHistory = watchHistoryForScope;
+    if (filters?.mediaType && filters.mediaType !== 'all') {
+        filteredHistory = watchHistoryForScope.filter(item => item.mediaType === filters.mediaType);
+        if (filteredHistory.length === 0) filteredHistory = watchHistoryForScope; // fallback
+        addLog({ level: 'INFO', message: `🔍 Filtered watch history to ${filteredHistory.length} ${filters.mediaType} items`, source: 'engine' });
+    }
+
+    // Smart Sampling: create a diverse mix of highest-rated, rewatched, and recent items
+    const scoredHistory = filteredHistory.map(item => {
+        const ratingScore = item.rating ? item.rating * 2 : 0; // rating usually 0-10, so 0-20 points
+        const playScore = item.playCount ? Math.min(item.playCount, 5) : 0; // up to 5 points
+        const recencyScore = item.lastPlayedDate
+            ? Math.max(0, 5 - (Date.now() - new Date(item.lastPlayedDate).getTime()) / (1000 * 60 * 60 * 24 * 30)) // up to 5 points (decay over 5 months)
+            : 0;
+        return { item, score: ratingScore + playScore + recencyScore + Math.random() * 2 };
+    });
+
+    // Sort by score desc to get the most significant items
+    scoredHistory.sort((a, b) => b.score - a.score);
+
+    // Take top 10 from scored history
+    const sampledItems = scoredHistory.slice(0, 10).map(s => s.item);
+    addLog({ level: 'INFO', message: `🎲 Smart sampled ${sampledItems.length} items to generate baseline recommendations`, source: 'engine' });
+
+    const preferredLanguages = filters?.language && filters.language !== 'all'
+        ? [filters.language.toLowerCase()]
+        : await inferPreferredLanguages(sampledItems);
+    if (preferredLanguages.length > 0) {
+        addLog({
+            level: 'INFO',
+            message: `🌐 Language preference signal detected: ${preferredLanguages.join(', ')}`,
+            source: 'engine',
+        });
+    }
+
+    for (const item of sampledItems) {
+        try {
+            const recs = await getRecommendationsForItem(item, maxPerItem);
+            allTmdbRecs.push(...recs);
+        } catch (err) {
+            result.errors.push(`TMDb error for "${item.title}": ${(err as Error).message}`);
+        }
+    }
+
+    // Step 2b: Filter-driven discovery via TMDb /discover endpoint
+    if (
+        (filters && (filters.genres?.length || filters.yearMin || filters.yearMax || (filters.language && filters.language !== 'all') || (filters.mediaType && filters.mediaType !== 'all')))
+        || preferredLanguages.length > 0
+    ) {
+        try {
+            addLog({ level: 'INFO', message: `🔍 Running filter-driven TMDb discovery...`, source: 'engine' });
+            const discoverRecs = await discoverByFilters({
+                genres: filters?.genres,
+                language: filters?.language,
+                preferredLanguages,
+                yearMin: filters?.yearMin,
+                yearMax: filters?.yearMax,
+                mediaType: filters?.mediaType,
+                minRating: filters?.minRating,
+                providers: filters?.providers,
+            }, cfg.app.maxRecommendationsPerRun);
+            allTmdbRecs.push(...discoverRecs);
+            addLog({ level: 'INFO', message: `🔍 Filter discovery added ${discoverRecs.length} recommendations`, source: 'engine' });
+        } catch (err) {
+            result.errors.push(`TMDb discover error: ${(err as Error).message}`);
+        }
+    }
+
+    result.tmdbRecommendations += allTmdbRecs.length;
+    addLog({ level: 'INFO', message: `🎯 TMDb found ${allTmdbRecs.length} recommendations`, source: 'engine' });
+
+    // Step 2c: Creator Following (Director extraction for Top 2 movies) — movie-only, so skip
+    // outright when this scope is restricted to series (avoids wasted TMDb calls; the final
+    // mediaType filter below would strip these anyway, but there's no reason to make the calls).
+    if (!filters?.mediaType || filters.mediaType === 'all' || filters.mediaType === 'movie') {
+        try {
+            const topMovies = scoredHistory.filter(s => s.item.mediaType === 'movie' && s.item.tmdbId).slice(0, 2);
+            for (const s of topMovies) {
+                const credits = await getTmdbCredits(s.item.tmdbId!, 'movie');
+                if (credits && credits.crew) {
+                    const director = credits.crew.find((crewMember) => crewMember.job === 'Director');
+                    if (director) {
+                        addLog({ level: 'INFO', message: `🎬 Creator Following: Discovering works by ${director.name} (from ${s.item.title})`, source: 'engine' });
+                        const directorRecs = await discoverByCrew(director.id, 'movie', director.name, 3, preferredLanguages);
+                        allTmdbRecs.push(...directorRecs);
+                    }
+                }
+            }
+        } catch (err) {
+            result.errors.push(`Creator following error: ${(err as Error).message}`);
+        }
+    }
+
+    const rejectedTitles = feedbackProfile.rejectedTitles;
+
+    // Step 3: Get AI recommendations (with Taste Profile generation)
+    let aiRecs: Recommendation[] = [];
+    let tasteProfile: TasteProfile | null = null;
+    const aiCfg = cfg.ai;
+    if (aiCfg.enabled) {
+        try {
+            addLog({ level: 'INFO', message: `🧠 Generating Taste Profile...`, source: 'engine' });
+            tasteProfile = await generateTasteProfile(watchHistoryForScope);
+
+            aiRecs = await getAiRecommendations(watchHistoryForScope, tasteProfile, 10, filters, rejectedTitles, feedbackProfile);
+            result.aiRecommendations += aiRecs.length;
+            addLog({ level: 'INFO', message: `🤖 AI generated ${aiRecs.length} recommendations`, source: 'engine' });
+        } catch (err) {
+            result.errors.push(`AI error: ${(err as Error).message}`);
+        }
+    }
+
+    // Step 3b: Dynamic Keyword Discovery — restrict each branch to the active mediaType filter,
+    // same reasoning as Step 2c above.
+    if (tasteProfile && tasteProfile.keywords && tasteProfile.keywords.length > 0) {
+        try {
+            addLog({ level: 'INFO', message: `🔍 Running dynamic keyword discovery for: ${tasteProfile.keywords.join(', ')}`, source: 'engine' });
+            const keywordIds: number[] = [];
+            for (const kw of tasteProfile.keywords) {
+                const id = await searchTmdbKeyword(kw);
+                if (id) keywordIds.push(id);
+            }
+            if (keywordIds.length > 0) {
+                const kwRecs: Recommendation[] = [];
+                if (!filters?.mediaType || filters.mediaType === 'all' || filters.mediaType === 'movie') {
+                    kwRecs.push(...await discoverByKeywords(keywordIds, 'movie', 5, preferredLanguages));
+                }
+                if (!filters?.mediaType || filters.mediaType === 'all' || filters.mediaType === 'series') {
+                    kwRecs.push(...await discoverByKeywords(keywordIds, 'series', 5, preferredLanguages));
+                }
+                allTmdbRecs.push(...kwRecs);
+                addLog({ level: 'INFO', message: `🔍 Keyword discovery added ${kwRecs.length} recommendations`, source: 'engine' });
+            }
+        } catch (err) {
+            result.errors.push(`Keyword discovery error: ${(err as Error).message}`);
+        }
+    }
+
+    // Step 4: Merge, deduplicate, and save
+    const allRecs = [...allTmdbRecs, ...aiRecs]
+        .map((rec) => ({
+            ...rec,
+            fromWatchlist: Boolean(
+                (rec.tmdbId && library.seerrWatchlistTmdbIds.has(rec.tmdbId)) ||
+                library.seerrWatchlistTitles.has(rec.title.toLowerCase())
+            ),
+        }))
+        .toSorted((a, b) => scoreRecommendation(b, feedbackProfile, preferredLanguages) - scoreRecommendation(a, feedbackProfile, preferredLanguages));
+    const seen = new Set<string>();
+    const uniqueRecs: Recommendation[] = [];
+    const groupTag = scope.libraryGroupId ?? 'none';
+
+    for (const rec of allRecs) {
+        const key = rec.tmdbId ? `${groupTag}:tmdb:${rec.tmdbId}` : `${groupTag}:title:${rec.title.toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        // Resolve missing metadata (poster, overview, genres) via TMDb
+        if (!rec.posterUrl || !rec.tmdbId || !rec.language || !rec.genres?.length || !rec.overview || !rec.voteAverage) {
+            const type = rec.mediaType === 'movie' ? 'movie' : 'tv';
+            const tmdbResult = await searchTmdb(rec.title, type);
+
+            if (tmdbResult) {
+                rec.tmdbId = tmdbResult.id;
+                rec.language = rec.language || tmdbResult.original_language;
+                rec.overview = rec.overview || tmdbResult.overview;
+                rec.posterUrl = rec.posterUrl || (tmdbResult.poster_path
+                    ? `https://image.tmdb.org/t/p/w500${tmdbResult.poster_path}`
+                    : undefined);
+                rec.voteAverage = rec.voteAverage || tmdbResult.vote_average;
+                rec.genres = rec.genres?.length ? rec.genres : (
+                    tmdbResult.genre_ids?.map((id: number) => {
+                        const GENRE_MAP: Record<number, string> = {
+                            28: 'Action', 12: 'Adventure', 16: 'Animation', 35: 'Comedy',
+                            80: 'Crime', 99: 'Documentary', 18: 'Drama', 10751: 'Family',
+                            14: 'Fantasy', 36: 'History', 27: 'Horror', 10402: 'Music',
+                            9648: 'Mystery', 10749: 'Romance', 878: 'Sci-Fi', 53: 'Thriller',
+                            10752: 'War', 37: 'Western', 10759: 'Action & Adventure',
+                            10765: 'Sci-Fi & Fantasy',
+                        };
+                        return GENRE_MAP[id] || '';
+                    }).filter(Boolean)
+                );
+                rec.year = rec.year || (tmdbResult.release_date
+                    ? parseInt(tmdbResult.release_date.substring(0, 4))
+                    : tmdbResult.first_air_date
+                        ? parseInt(tmdbResult.first_air_date.substring(0, 4))
+                        : undefined);
+            }
+
+            // If we still don't have a poster and have a tmdbId, try getting details directly
+            if ((!rec.posterUrl || !rec.language) && rec.tmdbId) {
+                try {
+                    const detailType = rec.mediaType === 'movie' ? 'movie' : 'tv';
+                    const detailResult = await searchTmdb(rec.title, detailType);
+                    if (detailResult?.poster_path) {
+                        rec.posterUrl = `https://image.tmdb.org/t/p/w500${detailResult.poster_path}`;
+                    }
+                    if (detailResult?.original_language && !rec.language) rec.language = detailResult.original_language;
+                    if (detailResult && !rec.overview) rec.overview = detailResult.overview;
+                    if (detailResult && !rec.voteAverage) rec.voteAverage = detailResult.vote_average;
+                } catch { /* ignore */ }
+            }
+        }
+
+        // Check if already in Sonarr/Radarr library (using pre-fetched sets)
+        let alreadyExists = false;
+        const titleLower = rec.title.toLowerCase();
+
+        if (rec.mediaType === 'movie') {
+            // Check by TMDb ID first, then by title
+            if (rec.tmdbId && (library.radarrTmdbIds.has(rec.tmdbId) || library.watchedTmdbIds.has(rec.tmdbId))) {
+                alreadyExists = true;
+            } else if (library.radarrTitles.has(titleLower)) {
+                alreadyExists = true;
+            }
+        } else if (rec.mediaType === 'series') {
+            // Resolve TVDB ID if needed
+            if (!rec.tvdbId && rec.tmdbId) {
+                try {
+                    const ext = await getTmdbExternalIds(rec.tmdbId, 'tv');
+                    rec.tvdbId = ext.tvdb_id;
+                } catch { /* ignore */ }
+            }
+            // Check by TVDB ID first, then by title
+            if (rec.tvdbId && (library.sonarrTvdbIds.has(rec.tvdbId) || library.watchedTvdbIds.has(rec.tvdbId))) {
+                alreadyExists = true;
+            } else if (library.sonarrTitles.has(titleLower)) {
+                alreadyExists = true;
+            }
+        }
+
+        // Also skip if title matches something already watched
+        if (library.watchedTitles.has(titleLower) || (rec.imdbId && library.watchedImdbIds.has(rec.imdbId.toLowerCase()))) {
+            alreadyExists = true;
+        }
+        if (feedbackProfile.rejectedTitles.includes(titleLower)) {
+            alreadyExists = true;
+        }
+
+        if (alreadyExists) {
+            addLog({ level: 'DEBUG', message: `Skipping "${rec.title}" — already in library or watched`, source: 'engine' });
+            continue;
+        }
+
+        // Apply user filters
+        if (filters) {
+            // Genre filter
+            if (filters.genres && filters.genres.length > 0) {
+                const recGenres = (rec.genres || []).map(g => g.toLowerCase());
+                const matchesGenre = filters.genres.some((fg: string) => recGenres.includes(fg.toLowerCase()));
+                if (!matchesGenre) {
+                    addLog({ level: 'DEBUG', message: `Filtered out "${rec.title}" — does not match genre filter`, source: 'engine' });
+                    continue;
+                }
+            }
+            if (filters.language && filters.language !== 'all') {
+                if (!rec.language || rec.language.toLowerCase() !== filters.language.toLowerCase()) {
+                    addLog({ level: 'DEBUG', message: `Filtered out "${rec.title}" — language ${rec.language} doesn't match filter ${filters.language}`, source: 'engine' });
+                    continue;
+                }
+            }
+
+            // Year range filter
+            if (rec.year) {
+                if (filters.yearMin && rec.year < filters.yearMin) {
+                    addLog({ level: 'DEBUG', message: `Filtered out "${rec.title}" (${rec.year}) — before year range`, source: 'engine' });
+                    continue;
+                }
+                if (filters.yearMax && rec.year > filters.yearMax) {
+                    addLog({ level: 'DEBUG', message: `Filtered out "${rec.title}" (${rec.year}) — after year range`, source: 'engine' });
+                    continue;
+                }
+            }
+            // Media type filter — this is the final safety net that guarantees a library-group-
+            // scoped pass never saves a recommendation of the wrong media type, regardless of
+            // which upstream discovery path produced it.
+            if (filters.mediaType && filters.mediaType !== 'all' && rec.mediaType !== filters.mediaType) {
+                addLog({ level: 'DEBUG', message: `Filtered out "${rec.title}" — type ${rec.mediaType} doesn't match filter ${filters.mediaType}`, source: 'engine' });
+                continue;
+            }
+        }
+
+        // Save to DB
+        rec.libraryGroupId = scope.libraryGroupId;
+        addRecommendation(rec);
+        uniqueRecs.push(rec);
+    }
+
+    result.totalNew += uniqueRecs.length;
+    addLog({
+        level: 'INFO',
+        message: `💾 Saved ${uniqueRecs.length} new unique recommendations${scope.libraryGroupId ? ` for group "${scope.libraryGroupId}"` : ''}`,
+        source: 'engine',
+    });
+
+    return uniqueRecs;
+}
+
 export async function runRecommendationEngine(
     filters?: EngineFilters,
     source: 'manual' | 'scheduled' = 'manual'
@@ -158,6 +478,8 @@ export async function runRecommendationEngine(
             source: 'engine',
             details: JSON.stringify({ event: 'run_start', source }),
         });
+
+        const cfg = getConfig();
 
         // Step 0: Pre-fetch full Sonarr & Radarr libraries for duplicate checking
         const library: LibrarySets = {
@@ -200,7 +522,6 @@ export async function runRecommendationEngine(
         let watchHistory: WatchedItem[];
 
         try {
-            const cfg = getConfig();
             watchHistory = await connector.getWatchHistory(cfg.app.watchHistoryLimit);
             result.watchedCount = watchHistory.length;
             // Add watched titles to the exclusion set
@@ -228,10 +549,10 @@ export async function runRecommendationEngine(
             return result;
         }
 
-        const seerrCfg = getConfig().seerr;
+        const seerrCfg = cfg.seerr;
         if (seerrCfg.enabled && seerrCfg.watchlistSyncEnabled) {
             try {
-                const watchlist = await getSeerrWatchlist(getConfig().app.maxRecommendationsPerRun * 10, seerrCfg);
+                const watchlist = await getSeerrWatchlist(cfg.app.maxRecommendationsPerRun * 10, seerrCfg);
                 syncSeerrWatchlistSignals(watchlist);
             } catch (err) {
                 result.errors.push(`Seerr watchlist sync error: ${(err as Error).message}`);
@@ -242,305 +563,58 @@ export async function runRecommendationEngine(
         library.seerrWatchlistTmdbIds = signalSets.tmdbIds;
         library.seerrWatchlistTitles = signalSets.titles;
 
-        // Step 2: Get TMDb recommendations
-        const allTmdbRecs: Recommendation[] = [];
-        const cfg = getConfig();
-        const maxPerItem = Math.ceil(cfg.app.maxRecommendationsPerRun / Math.min(watchHistory.length, 10));
+        // Step 2-4: Generate, score, filter and save recommendations — once per configured
+        // library group, or once ungrouped if no groups are configured (unchanged behavior).
+        const groups = getLibraryGroups();
+        let allUniqueRecs: Recommendation[] = [];
 
-        // Filter watch history by media type if filter is set
-        let filteredHistory = watchHistory;
-        if (filters?.mediaType && filters.mediaType !== 'all') {
-            filteredHistory = watchHistory.filter(item => item.mediaType === filters.mediaType);
-            if (filteredHistory.length === 0) filteredHistory = watchHistory; // fallback
-            addLog({ level: 'INFO', message: `🔍 Filtered watch history to ${filteredHistory.length} ${filters.mediaType} items`, source: 'engine' });
-        }
+        if (groups.length === 0) {
+            const feedbackProfile = getFeedbackProfile();
+            allUniqueRecs = await generateAndSaveForScope(
+                watchHistory, library, feedbackProfile, cfg, filters, { libraryGroupId: null }, result
+            );
+        } else {
+            const requiredMediaType = filters?.mediaType && filters.mediaType !== 'all' ? filters.mediaType : null;
+            const applicableGroups = requiredMediaType
+                ? groups.filter((g) => g.mediaType === requiredMediaType)
+                : groups;
 
-        // Smart Sampling: create a diverse mix of highest-rated, rewatched, and recent items
-        const scoredHistory = filteredHistory.map(item => {
-            const ratingScore = item.rating ? item.rating * 2 : 0; // rating usually 0-10, so 0-20 points
-            const playScore = item.playCount ? Math.min(item.playCount, 5) : 0; // up to 5 points
-            const recencyScore = item.lastPlayedDate 
-                ? Math.max(0, 5 - (Date.now() - new Date(item.lastPlayedDate).getTime()) / (1000 * 60 * 60 * 24 * 30)) // up to 5 points (decay over 5 months)
-                : 0;
-            return { item, score: ratingScore + playScore + recencyScore + Math.random() * 2 };
-        });
-        
-        // Sort by score desc to get the most significant items
-        scoredHistory.sort((a, b) => b.score - a.score);
-        
-        // Take top 10 from scored history
-        const sampledItems = scoredHistory.slice(0, 10).map(s => s.item);
-        addLog({ level: 'INFO', message: `🎲 Smart sampled ${sampledItems.length} items to generate baseline recommendations`, source: 'engine' });
-
-        const preferredLanguages = filters?.language && filters.language !== 'all'
-            ? [filters.language.toLowerCase()]
-            : await inferPreferredLanguages(sampledItems);
-        if (preferredLanguages.length > 0) {
-            addLog({
-                level: 'INFO',
-                message: `🌐 Language preference signal detected: ${preferredLanguages.join(', ')}`,
-                source: 'engine',
-            });
-        }
-
-        for (const item of sampledItems) {
-            try {
-                const recs = await getRecommendationsForItem(item, maxPerItem);
-                allTmdbRecs.push(...recs);
-            } catch (err) {
-                result.errors.push(`TMDb error for "${item.title}": ${(err as Error).message}`);
-            }
-        }
-
-        // Step 2b: Filter-driven discovery via TMDb /discover endpoint
-        if (
-            (filters && (filters.genres?.length || filters.yearMin || filters.yearMax || (filters.language && filters.language !== 'all') || (filters.mediaType && filters.mediaType !== 'all')))
-            || preferredLanguages.length > 0
-        ) {
-            try {
-                addLog({ level: 'INFO', message: `🔍 Running filter-driven TMDb discovery...`, source: 'engine' });
-                const discoverRecs = await discoverByFilters({
-                    genres: filters?.genres,
-                    language: filters?.language,
-                    preferredLanguages,
-                    yearMin: filters?.yearMin,
-                    yearMax: filters?.yearMax,
-                    mediaType: filters?.mediaType,
-                    minRating: filters?.minRating,
-                    providers: filters?.providers,
-                }, cfg.app.maxRecommendationsPerRun);
-                allTmdbRecs.push(...discoverRecs);
-                addLog({ level: 'INFO', message: `🔍 Filter discovery added ${discoverRecs.length} recommendations`, source: 'engine' });
-            } catch (err) {
-                result.errors.push(`TMDb discover error: ${(err as Error).message}`);
-            }
-        }
-
-        result.tmdbRecommendations = allTmdbRecs.length;
-        addLog({ level: 'INFO', message: `🎯 TMDb found ${allTmdbRecs.length} recommendations`, source: 'engine' });
-
-        // Step 2c: Creator Following (Director extraction for Top 2 movies)
-        try {
-            const topMovies = scoredHistory.filter(s => s.item.mediaType === 'movie' && s.item.tmdbId).slice(0, 2);
-            for (const s of topMovies) {
-                const credits = await getTmdbCredits(s.item.tmdbId!, 'movie');
-                if (credits && credits.crew) {
-                    const director = credits.crew.find((crewMember) => crewMember.job === 'Director');
-                    if (director) {
-                        addLog({ level: 'INFO', message: `🎬 Creator Following: Discovering works by ${director.name} (from ${s.item.title})`, source: 'engine' });
-                        const directorRecs = await discoverByCrew(director.id, 'movie', director.name, 3, preferredLanguages);
-                        allTmdbRecs.push(...directorRecs);
-                    }
-                }
-            }
-        } catch (err) {
-            result.errors.push(`Creator following error: ${(err as Error).message}`);
-        }
-
-        const feedbackProfile = getFeedbackProfile();
-
-        // Step 3: Get AI recommendations (with Taste Profile generation)
-        let aiRecs: Recommendation[] = [];
-        let tasteProfile: TasteProfile | null = null;
-        const aiCfg = getConfig().ai;
-        if (aiCfg.enabled) {
-            try {
-                addLog({ level: 'INFO', message: `🧠 Generating Taste Profile...`, source: 'engine' });
-                tasteProfile = await generateTasteProfile(watchHistory);
-                
-                const rejectedTitles = feedbackProfile.rejectedTitles;
-
-                aiRecs = await getAiRecommendations(watchHistory, tasteProfile, 10, filters, rejectedTitles, feedbackProfile);
-                result.aiRecommendations = aiRecs.length;
-                addLog({ level: 'INFO', message: `🤖 AI generated ${aiRecs.length} recommendations`, source: 'engine' });
-            } catch (err) {
-                result.errors.push(`AI error: ${(err as Error).message}`);
-            }
-        }
-
-        // Step 3b: Dynamic Keyword Discovery
-        if (tasteProfile && tasteProfile.keywords && tasteProfile.keywords.length > 0) {
-            try {
-                addLog({ level: 'INFO', message: `🔍 Running dynamic keyword discovery for: ${tasteProfile.keywords.join(', ')}`, source: 'engine' });
-                const keywordIds: number[] = [];
-                for (const kw of tasteProfile.keywords) {
-                    const id = await searchTmdbKeyword(kw);
-                    if (id) keywordIds.push(id);
-                }
-                if (keywordIds.length > 0) {
-                    const kwMovieRecs = await discoverByKeywords(keywordIds, 'movie', 5, preferredLanguages);
-                    const kwTvRecs = await discoverByKeywords(keywordIds, 'series', 5, preferredLanguages);
-                    allTmdbRecs.push(...kwMovieRecs, ...kwTvRecs);
-                    addLog({ level: 'INFO', message: `🔍 Keyword discovery added ${kwMovieRecs.length + kwTvRecs.length} recommendations`, source: 'engine' });
-                }
-            } catch (err) {
-                result.errors.push(`Keyword discovery error: ${(err as Error).message}`);
-            }
-        }
-
-        // Step 4: Merge, deduplicate, and save
-        const allRecs = [...allTmdbRecs, ...aiRecs]
-            .map((rec) => ({
-                ...rec,
-                fromWatchlist: Boolean(
-                    (rec.tmdbId && library.seerrWatchlistTmdbIds.has(rec.tmdbId)) ||
-                    library.seerrWatchlistTitles.has(rec.title.toLowerCase())
-                ),
-            }))
-            .toSorted((a, b) => scoreRecommendation(b, feedbackProfile, preferredLanguages) - scoreRecommendation(a, feedbackProfile, preferredLanguages));
-        const seen = new Set<string>();
-        const uniqueRecs: Recommendation[] = [];
-
-        for (const rec of allRecs) {
-            const key = rec.tmdbId ? `tmdb:${rec.tmdbId}` : `title:${rec.title.toLowerCase()}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-
-            // Resolve missing metadata (poster, overview, genres) via TMDb
-            if (!rec.posterUrl || !rec.tmdbId || !rec.language || !rec.genres?.length || !rec.overview || !rec.voteAverage) {
-                const type = rec.mediaType === 'movie' ? 'movie' : 'tv';
-                const tmdbResult = await searchTmdb(rec.title, type);
-
-                if (tmdbResult) {
-                    rec.tmdbId = tmdbResult.id;
-                    rec.language = rec.language || tmdbResult.original_language;
-                    rec.overview = rec.overview || tmdbResult.overview;
-                    rec.posterUrl = rec.posterUrl || (tmdbResult.poster_path
-                        ? `https://image.tmdb.org/t/p/w500${tmdbResult.poster_path}`
-                        : undefined);
-                    rec.voteAverage = rec.voteAverage || tmdbResult.vote_average;
-                    rec.genres = rec.genres?.length ? rec.genres : (
-                        tmdbResult.genre_ids?.map((id: number) => {
-                            const GENRE_MAP: Record<number, string> = {
-                                28: 'Action', 12: 'Adventure', 16: 'Animation', 35: 'Comedy',
-                                80: 'Crime', 99: 'Documentary', 18: 'Drama', 10751: 'Family',
-                                14: 'Fantasy', 36: 'History', 27: 'Horror', 10402: 'Music',
-                                9648: 'Mystery', 10749: 'Romance', 878: 'Sci-Fi', 53: 'Thriller',
-                                10752: 'War', 37: 'Western', 10759: 'Action & Adventure',
-                                10765: 'Sci-Fi & Fantasy',
-                            };
-                            return GENRE_MAP[id] || '';
-                        }).filter(Boolean)
+            for (const group of applicableGroups) {
+                try {
+                    const sectionKeys = resolveInputSectionKeys(group.id, groups);
+                    // Items with no resolvable section key (non-Plex servers, or legacy cached
+                    // items) are kept in every group's signal rather than dropped.
+                    const groupWatchHistory = watchHistory.filter(
+                        (item) => !item.librarySectionKey || sectionKeys.size === 0 || sectionKeys.has(item.librarySectionKey)
                     );
-                    rec.year = rec.year || (tmdbResult.release_date
-                        ? parseInt(tmdbResult.release_date.substring(0, 4))
-                        : tmdbResult.first_air_date
-                            ? parseInt(tmdbResult.first_air_date.substring(0, 4))
-                            : undefined);
-                }
+                    const feedbackProfile = getFeedbackProfile(200, resolveInputGroupIds(group.id, groups));
+                    const groupFilters: EngineFilters = { ...filters, mediaType: group.mediaType };
 
-                // If we still don't have a poster and have a tmdbId, try getting details directly
-                if ((!rec.posterUrl || !rec.language) && rec.tmdbId) {
-                    try {
-                        const detailType = rec.mediaType === 'movie' ? 'movie' : 'tv';
-                        const detailResult = await searchTmdb(rec.title, detailType);
-                        if (detailResult?.poster_path) {
-                            rec.posterUrl = `https://image.tmdb.org/t/p/w500${detailResult.poster_path}`;
-                        }
-                        if (detailResult?.original_language && !rec.language) rec.language = detailResult.original_language;
-                        if (detailResult && !rec.overview) rec.overview = detailResult.overview;
-                        if (detailResult && !rec.voteAverage) rec.voteAverage = detailResult.vote_average;
-                    } catch { /* ignore */ }
+                    addLog({ level: 'INFO', message: `📂 Generating recommendations for library group "${group.name}" (${groupWatchHistory.length} watch-history signals)`, source: 'engine' });
+                    const groupRecs = await generateAndSaveForScope(
+                        groupWatchHistory, library, feedbackProfile, cfg, groupFilters, { libraryGroupId: group.id }, result
+                    );
+                    allUniqueRecs.push(...groupRecs);
+                } catch (err) {
+                    result.errors.push(`Library group "${group.name}" error: ${(err as Error).message}`);
                 }
             }
-
-            // Check if already in Sonarr/Radarr library (using pre-fetched sets)
-            let alreadyExists = false;
-            const titleLower = rec.title.toLowerCase();
-
-            if (rec.mediaType === 'movie') {
-                // Check by TMDb ID first, then by title
-                if (rec.tmdbId && (library.radarrTmdbIds.has(rec.tmdbId) || library.watchedTmdbIds.has(rec.tmdbId))) {
-                    alreadyExists = true;
-                } else if (library.radarrTitles.has(titleLower)) {
-                    alreadyExists = true;
-                }
-            } else if (rec.mediaType === 'series') {
-                // Resolve TVDB ID if needed
-                if (!rec.tvdbId && rec.tmdbId) {
-                    try {
-                        const ext = await getTmdbExternalIds(rec.tmdbId, 'tv');
-                        rec.tvdbId = ext.tvdb_id;
-                    } catch { /* ignore */ }
-                }
-                // Check by TVDB ID first, then by title
-                if (rec.tvdbId && (library.sonarrTvdbIds.has(rec.tvdbId) || library.watchedTvdbIds.has(rec.tvdbId))) {
-                    alreadyExists = true;
-                } else if (library.sonarrTitles.has(titleLower)) {
-                    alreadyExists = true;
-                }
-            }
-
-            // Also skip if title matches something already watched
-            if (library.watchedTitles.has(titleLower) || (rec.imdbId && library.watchedImdbIds.has(rec.imdbId.toLowerCase()))) {
-                alreadyExists = true;
-            }
-            if (feedbackProfile.rejectedTitles.includes(titleLower)) {
-                alreadyExists = true;
-            }
-
-            if (alreadyExists) {
-                addLog({ level: 'DEBUG', message: `Skipping "${rec.title}" — already in library or watched`, source: 'engine' });
-                continue;
-            }
-
-            // Apply user filters
-            if (filters) {
-                // Genre filter
-                if (filters.genres && filters.genres.length > 0) {
-                    const recGenres = (rec.genres || []).map(g => g.toLowerCase());
-                    const matchesGenre = filters.genres.some((fg: string) => recGenres.includes(fg.toLowerCase()));
-                    if (!matchesGenre) {
-                        addLog({ level: 'DEBUG', message: `Filtered out "${rec.title}" — does not match genre filter`, source: 'engine' });
-                        continue;
-                    }
-                }
-                if (filters.language && filters.language !== 'all') {
-                    if (!rec.language || rec.language.toLowerCase() !== filters.language.toLowerCase()) {
-                        addLog({ level: 'DEBUG', message: `Filtered out "${rec.title}" — language ${rec.language} doesn't match filter ${filters.language}`, source: 'engine' });
-                        continue;
-                    }
-                }
-
-                // Year range filter
-                if (rec.year) {
-                    if (filters.yearMin && rec.year < filters.yearMin) {
-                        addLog({ level: 'DEBUG', message: `Filtered out "${rec.title}" (${rec.year}) — before year range`, source: 'engine' });
-                        continue;
-                    }
-                    if (filters.yearMax && rec.year > filters.yearMax) {
-                        addLog({ level: 'DEBUG', message: `Filtered out "${rec.title}" (${rec.year}) — after year range`, source: 'engine' });
-                        continue;
-                    }
-                }
-                // Media type filter
-                if (filters.mediaType && filters.mediaType !== 'all' && rec.mediaType !== filters.mediaType) {
-                    addLog({ level: 'DEBUG', message: `Filtered out "${rec.title}" — type ${rec.mediaType} doesn't match filter ${filters.mediaType}`, source: 'engine' });
-                    continue;
-                }
-            }
-
-            // Save to DB
-            addRecommendation(rec);
-            uniqueRecs.push(rec);
         }
-
-        result.totalNew = uniqueRecs.length;
-        addLog({ level: 'INFO', message: `💾 Saved ${uniqueRecs.length} new unique recommendations`, source: 'engine' });
 
         // Step 5: Auto-add if configured
-        const schedulerCfg = getConfig().scheduler;
+        const schedulerCfg = cfg.scheduler;
         if (schedulerCfg.autoAdd) {
-            for (const rec of uniqueRecs) {
+            for (const rec of allUniqueRecs) {
                 try {
+                    const group = rec.libraryGroupId ? groups.find((g) => g.id === rec.libraryGroupId) : undefined;
                     if (rec.mediaType === 'movie' && rec.tmdbId) {
-                        const res = await addMovieToRadarr(rec.tmdbId);
+                        const res = await addMovieToRadarr(rec.tmdbId, group?.qualityProfileId, group?.rootFolder);
                         if (res.success) {
                             updateRecommendationStatus(rec.id!, 'added');
                             result.addedToArr++;
                         }
                     } else if (rec.mediaType === 'series' && rec.tvdbId) {
-                        const res = await addSeriesToSonarr(rec.tvdbId);
+                        const res = await addSeriesToSonarr(rec.tvdbId, group?.qualityProfileId, group?.rootFolder);
                         if (res.success) {
                             updateRecommendationStatus(rec.id!, 'added');
                             result.addedToArr++;

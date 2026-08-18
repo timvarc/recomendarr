@@ -18,10 +18,12 @@ export async function POST(request: Request) {
                 const connector = createMediaServerConnector(config.mediaServer);
                 const connected = await connector.testConnection();
                 let users: { id: string; name: string }[] = [];
+                let libraries: { key: string; title: string; type: string }[] = [];
                 if (connected) {
                     try { users = await connector.getUsers(); } catch { /* ignore */ }
+                    try { libraries = await connector.getLibrarySections(); } catch { /* ignore */ }
                 }
-                return NextResponse.json({ success: connected, users, type: config.mediaServer.type });
+                return NextResponse.json({ success: connected, users, libraries, type: config.mediaServer.type });
             }
 
             case 'sonarr': {
