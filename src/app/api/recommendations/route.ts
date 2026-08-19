@@ -16,6 +16,7 @@ export async function GET(request: Request) {
         const countsOnly = searchParams.get('counts') === 'true';
         const watchlistFilter = searchParams.get('watchlist');
         const watchlist = watchlistFilter === 'only' || watchlistFilter === 'exclude' ? watchlistFilter : 'all';
+        const libraryGroupId = searchParams.get('library') || undefined;
         const statuses: Recommendation['status'][] | undefined = statusParam
             ? statusParam
                 .split(',')
@@ -28,7 +29,7 @@ export async function GET(request: Request) {
             return NextResponse.json(counts);
         }
 
-        const recommendations = getRecommendations(statuses, limit, offset, { watchlist });
+        const recommendations = getRecommendations(statuses, limit, offset, { watchlist, libraryGroupId });
         const counts = getRecommendationCounts();
         return NextResponse.json({ recommendations, counts });
     } catch (err) {

@@ -2,7 +2,7 @@ import type { FeedbackProfile, FeedbackReason } from '@/lib/types';
 
 export type Page = 'dashboard' | 'recommendations' | 'library' | 'logs' | 'settings';
 export type RecommendationFilter = 'all' | 'pending' | 'rejected' | 'not_now';
-export type SettingsTabId = 'media' | 'arr' | 'ai' | 'automation' | 'notifications' | 'advanced';
+export type SettingsTabId = 'media' | 'libraries' | 'arr' | 'ai' | 'automation' | 'notifications' | 'advanced';
 
 export interface Counts {
     pending: number;
@@ -67,12 +67,19 @@ export interface SettingsFormData {
     notify_on_errors: string;
 }
 
+export interface DiscoveredLibrary {
+    key: string;
+    title: string;
+    type: 'movie' | 'series';
+}
+
 export interface ConnectionResult {
     success?: boolean;
     testing: boolean;
     data?: {
         success?: boolean;
         users?: DiscoveryUser[];
+        libraries?: DiscoveredLibrary[];
         profiles?: ArrProfile[];
         rootFolders?: ArrFolder[];
         error?: string;
@@ -168,6 +175,7 @@ export const EMPTY_DASHBOARD_SUMMARY: DashboardSummary = {
 
 export const SETTINGS_TABS: Array<{ id: SettingsTabId; label: string; hint: string }> = [
     { id: 'media', label: 'Media Server', hint: 'Watch history source and user selection' },
+    { id: 'libraries', label: 'Libraries', hint: 'Split recommendations by Plex library' },
     { id: 'arr', label: 'Arr Apps', hint: 'Sonarr and Radarr defaults' },
     { id: 'ai', label: 'AI', hint: 'Provider and ranking behavior' },
     { id: 'automation', label: 'Automation', hint: 'Scheduler, cadence, and auto-add rules' },
