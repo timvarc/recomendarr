@@ -181,7 +181,7 @@ export function getConfig() {
       enabled: get('ai_enabled', 'AI_ENABLED', 'false') === 'true',
       providerUrl: get('ai_provider_url', 'AI_PROVIDER_URL', 'https://api.openai.com/v1'),
       apiKey: get('ai_api_key', 'AI_API_KEY', ''),
-      model: get('ai_model', 'AI_MODEL', 'gpt-4o'),
+      model: get('ai_model', 'AI_MODEL', 'gpt-5.6-luna'),
     },
     scheduler: {
       enabled: get('scheduler_enabled', 'SCHEDULER_ENABLED', 'true') === 'true',

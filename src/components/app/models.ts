@@ -221,7 +221,7 @@ export const DEFAULT_SETTINGS_FORM: SettingsFormData = {
     ai_enabled: 'false',
     ai_provider_url: 'https://api.openai.com/v1',
     ai_api_key: '',
-    ai_model: 'gpt-4o',
+    ai_model: 'gpt-5.6-luna',
     tmdb_recommendations_enabled: 'true',
     scheduler_enabled: 'true',
     cron_schedule: '0 0,8,16 * * *',
