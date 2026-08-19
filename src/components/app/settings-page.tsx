@@ -569,6 +569,31 @@ export function SettingsPage({
                             </div>
                         )}
                     </section>
+
+                    <section className="settings-card">
+                        <div className="section-heading">
+                            <div>
+                                <p className="section-kicker">TMDb Graph</p>
+                                <h3>Generic discovery recommendations</h3>
+                            </div>
+                        </div>
+
+                        <label className="toggle-card">
+                            <div>
+                                <strong>Generate TMDb graph recommendations</strong>
+                                <p>
+                                    Includes &quot;similar to what you watched&quot;, filter-based discovery, creator following, and
+                                    keyword discovery — all sourced from TMDb rather than the AI blend. Turn this off to rely on AI
+                                    (and your Seerr watchlist, if enabled) only.
+                                </p>
+                            </div>
+                            <input
+                                type="checkbox"
+                                checked={formData.tmdb_recommendations_enabled === 'true'}
+                                onChange={(event) => updateField('tmdb_recommendations_enabled', event.target.checked ? 'true' : 'false')}
+                            />
+                        </label>
+                    </section>
                 </div>
             )}
 

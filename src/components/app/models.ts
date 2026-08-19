@@ -52,6 +52,7 @@ export interface SettingsFormData {
     ai_provider_url: string;
     ai_api_key: string;
     ai_model: string;
+    tmdb_recommendations_enabled: string;
     scheduler_enabled: string;
     cron_schedule: string;
     auto_add: string;
@@ -221,6 +222,7 @@ export const DEFAULT_SETTINGS_FORM: SettingsFormData = {
     ai_provider_url: 'https://api.openai.com/v1',
     ai_api_key: '',
     ai_model: 'gpt-4o',
+    tmdb_recommendations_enabled: 'true',
     scheduler_enabled: 'true',
     cron_schedule: '0 0,8,16 * * *',
     auto_add: 'false',

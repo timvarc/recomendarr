@@ -175,6 +175,7 @@ export function getConfig() {
     tmdb: {
       apiKey: get('tmdb_api_key', 'TMDB_API_KEY', BUILTIN_TMDB_KEY),
       baseUrl: 'https://api.themoviedb.org/3',
+      recommendationsEnabled: get('tmdb_recommendations_enabled', 'TMDB_RECOMMENDATIONS_ENABLED', 'true') === 'true',
     },
     ai: {
       enabled: get('ai_enabled', 'AI_ENABLED', 'false') === 'true',
